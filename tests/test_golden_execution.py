@@ -46,8 +46,11 @@ from agency.harness.executable import harness_installation_mounts, resolve_harne
 from agency.harness.pins import HarnessNotInstalled
 from agency.llm.mock import _MockBackend
 from tests.exchange_helpers import record_exchange
-from tests.harness_installs import container_image_problem, skip_or_fail
+from tests.harness_installs import skip_or_fail
 
+# golden_image is a conftest.py fixture (shared with tests/integration/); CONTAINER_BACKEND
+# is a plain constant, so it still needs a normal import.
+from .conftest import CONTAINER_BACKEND
 
 # for_config() currently uses these strings; there is no harness enum/registry.
 HARNESSES = ("native", "claude_code", "codex", "opencode", "grok")
@@ -59,22 +62,6 @@ LATE = "golden completed-execution redirect"
 ANSWER = "GOLDEN_OK"
 WAIT_SECONDS = 90
 ARTIFACT_ROOT = Path(__file__).resolve().parents[1] / "artifacts" / "golden-execution"
-
-
-CONTAINER_BACKEND = os.environ.get("AGENCY_TEST_CONTAINER_BACKEND", "docker")
-
-
-@pytest.fixture(scope="module")
-def golden_image():
-    image = os.environ.get("AGENCY_TEST_HARNESS_IMAGE", "docker.io/library/python:3.12-slim")
-    problem = None
-    if not sys.platform.startswith("linux"):
-        problem = "golden profiling and real external harnesses require Linux"
-    else:
-        problem = container_image_problem(CONTAINER_BACKEND, image)
-    if problem:
-        skip_or_fail(problem)
-    return image
 
 
 def _harness_problem(harness: str, image: str) -> "str | None":
