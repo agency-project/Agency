@@ -32,6 +32,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import threading
@@ -1091,6 +1092,59 @@ class TestCfsSupported:
         assert _container._ContainerBackendBase._cfs_supported() is expected
 
 
+_docker_available = shutil.which("docker") is not None
+_docker_daemon = pytest.mark.skipif(
+    not _docker_available, reason="Docker daemon not reachable"
+)
+
+
+class TestCpuCapSurvivesLifecycle:
+    """CPU quotas must work even when the configured cap exceeds daemon
+    capacity: creation, live update, and checkpoint restore all express
+    the quota directly (--cpu-period/--cpu-quota) rather than through the
+    daemon-clamped --cpus."""
+
+    @staticmethod
+    def _sandbox(cpus):
+        config = agconfig_cls()
+        config.resources.idle_cpus = cpus
+        config.sandbox.backend = "docker"
+        config.sandbox.gpu_passthrough = False
+        return make_sandbox("docker", agconfig=config)
+
+    @_docker_daemon
+    @pytest.mark.parametrize("cpus", [None, 0.5, 2 * (os.cpu_count() or 1)])
+    def test_cpu_cap_survives_creation_live_update_and_checkpoint_restore(self, cpus):
+        if not _container._ContainerBackendBase._cfs_supported():
+            pytest.skip("CFS CPU quotas are unavailable")
+        sb = self._sandbox(cpus)
+
+        def assert_cap(expected):
+            result = subprocess.run(
+                ["docker", "inspect", "--format={{json .HostConfig}}", sb._backend._name],
+                capture_output=True,
+                check=True,
+            )
+            limits = json.loads(result.stdout)
+            assert limits["CpuQuota"] == (int(expected * 100_000) if expected is not None else 0)
+            assert limits["CpuPeriod"] == (100_000 if expected is not None else 0)
+
+        try:
+            sb.write_file("/workspace/marker", "preserved")
+            assert_cap(cpus)
+            sb.update_limits(cpus=0.25)
+            assert_cap(0.25)
+            # Releasing back to a large resting cap must also work on a small host.
+            sb.update_limits(cpus=2 * (os.cpu_count() or 1))
+            assert_cap(2 * (os.cpu_count() or 1))
+            sb.commit()
+            sb.rm_container()
+            assert sb.read_file("/workspace/marker") == "preserved"
+            assert_cap(cpus)
+        finally:
+            sb.destroy()
+
+
 class TestProfilerContainerRegistration:
     """``_register_prof_container`` resolves the container's cgroup from the
     runtime-reported init PID. Kernel and runtime surfaces are mocked, so this
@@ -1487,17 +1541,28 @@ class TestRunCommand:
         backend._agconfig.resources.idle_memory = None
         assert not any(a.startswith("--memory") for a in _started_run_cmd(backend))
 
-    def test_cpu_limit_is_clamped_to_the_host_cpu_count(self, backend):
+    def test_cpu_limit_expresses_the_quota_directly(self, backend):
+        """--cpu-period/--cpu-quota rather than --cpus: the daemon rejects
+        --cpus above its own CPU count even though a CFS quota above
+        physical capacity is valid (and simply nonbinding)."""
         backend._agconfig.resources.idle_cpus = 64
-        assert "--cpus=4" in _started_run_cmd(backend, cfs=True, cpu_count=4)
+        cmd = _started_run_cmd(backend, cfs=True, cpu_count=4)
+        assert "--cpu-period=100000" in cmd and "--cpu-quota=6400000" in cmd
 
     def test_cpu_limit_below_the_cpu_count_is_kept(self, backend):
         backend._agconfig.resources.idle_cpus = 2
-        assert "--cpus=2" in _started_run_cmd(backend, cfs=True, cpu_count=8)
+        cmd = _started_run_cmd(backend, cfs=True, cpu_count=8)
+        assert "--cpu-period=100000" in cmd and "--cpu-quota=200000" in cmd
 
     def test_cpu_limit_is_dropped_when_the_kernel_cannot_enforce_a_quota(self, backend):
         backend._agconfig.resources.idle_cpus = 2
-        assert not any(a.startswith("--cpus") for a in _started_run_cmd(backend, cfs=False))
+        cmd = _started_run_cmd(backend, cfs=False)
+        assert not any(a.startswith("--cpu") for a in cmd)
+
+    def test_cpu_limit_is_omitted_without_a_limit(self, backend):
+        backend._agconfig.resources.idle_cpus = None
+        cmd = _started_run_cmd(backend, cfs=True)
+        assert not any(a.startswith("--cpu") for a in cmd)
 
     def test_cpuset_flags(self, backend):
         backend._agconfig.sandbox.cpuset_cpus = "0-3"
@@ -1962,12 +2027,14 @@ class TestUpdateLimits:
 
     def test_cpus_only_sets_no_memory_flags(self, backend):
         (cmd,) = self._cmds(backend, cpus=2.0)
-        assert "--cpus=2.0" in cmd
+        assert "--cpu-quota=200000" in cmd
         assert not any(arg.startswith("--memory") for arg in cmd)
 
-    def test_cpus_are_clamped_to_the_host_cpu_count(self, backend):
+    def test_cpus_over_host_count_are_not_clamped(self, backend):
+        """A CFS quota above physical capacity is valid and nonbinding;
+        expressing it directly avoids the daemon's --cpus clamp."""
         (cmd,) = self._cmds(backend, cpus=64.0, cpu_count=4)
-        assert "--cpus=4" in cmd
+        assert "--cpu-quota=6400000" in cmd
 
     def test_cpus_are_dropped_when_no_quota_can_be_enforced(self, backend):
         assert self._cmds(backend, cfs=False, cpus=2.0) == []
