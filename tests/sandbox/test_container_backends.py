@@ -1514,6 +1514,10 @@ class TestRunCommand:
         cmd = _started_run_cmd(backend, extra=[patch.object(_container, "_gpu_flags", gf)])
         gf.assert_called_once_with(backend._runtime)
         assert "--device" in cmd and "sentinel" in cmd
+        # Native harness supervision must also follow children that change UID
+        # (for example apt's _apt download worker). Parent/child ptrace alone
+        # does not permit reading their memory after the credential change.
+        assert "--cap-add=SYS_PTRACE" in cmd
 
     def test_cpu_only_policy_omits_gpu_flags_on_a_gpu_host(self, container_runtime):
         cfg = agconfig_cls()

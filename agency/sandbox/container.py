@@ -975,12 +975,15 @@ class _ContainerBackendBase(agsandbox_backend):
         if self._virtual_gpu_count_requested > 0 and not self._agconfig.sandbox.gpu_passthrough:
             raise RuntimeError("GPU reservation is forbidden by this sandbox's CPU-only policy")
         gpu_flags = _gpu_flags(self._runtime) if self._agconfig.sandbox.gpu_passthrough else []
+        # Native harness supervision must also follow children that change UID
+        # (for example apt's _apt download worker). Parent/child ptrace alone
+        # does not permit reading their memory after the credential change.
+        gpu_flags += ["--cap-add=SYS_PTRACE"]
         if (
             storage is not None
             and self._agconfig.sandbox.checkpoint_fast_resume
             and storage.criu_ready
         ):
-            gpu_flags += ["--cap-add=SYS_PTRACE"]
             if self._runtime == "podman":
                 gpu_flags += [f"--init-path={storage.init_path}"]
             gpu_flags += ["--annotation", f"org.criu.config={storage.criu_config}"]

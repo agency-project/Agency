@@ -169,7 +169,7 @@ def test_prepare_local_rejects_codex_versions_other_than_the_pinned_one(monkeypa
         "run",
         lambda *a, **kw: SimpleNamespace(returncode=0, stdout="codex-cli 0.154.0", stderr=""),
     )
-    with pytest.raises(RuntimeError, match="expected"):
+    with pytest.raises(RuntimeError, match="supported versions"):
         executable.prepare_harness_executable_local("codex", config)
 
 
@@ -267,3 +267,20 @@ def test_restored_harness_reaches_checkpoint_sandbox_configuration(monkeypatch, 
         assert config.agent.harness == "native"
     finally:
         restored.sandbox.destroy()
+
+
+def test_prepare_local_accepts_validated_codex_0_162_1(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from agency.configs.agconfig import agconfig, harnessadapterconfig
+    from agency.harness.executable import prepare_harness_executable_local
+
+    binary = tmp_path / "codex"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(
+        "agency.harness.executable.subprocess.run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout="codex-cli 0.162.1", stderr=""),
+    )
+    assert prepare_harness_executable_local(
+        "codex", agconfig(harnessadapterconfig(binary_path=str(binary)))
+    ) == str(binary)
