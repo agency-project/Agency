@@ -75,7 +75,7 @@ Agency provides a sandboxed execution environment, Python API, supported agent h
 | Model backends | OpenAI Chat Completions / Responses, Anthropic, Amazon Bedrock, OpenAI-compatible endpoints (including vLLM) |
 | Environment | Linux sandboxes using Docker or Podman, with configurable resources and mounts |
 
-Compatibility depends on model capabilities, configuration, and external CLI versions. The external harness CLIs are installed at their pinned versions with `agency install-harnesses` (see [Configuration](docs/guides/configuration.md#agent-harnesses)).
+Compatibility depends on model capabilities, configuration, and external CLI versions. The external harness CLIs are installed at their pinned versions with **`agency install-harnesses`** (see [Configuration](docs/guides/configuration.md#agent-harnesses)).
 
 **Experimental:** Integration with existing Claude Code and Codex CLI sessions on Linux is experimental. Profiling, interception, and execution controls may be limited. Python-orchestrated workflows currently provide the most complete experience.
 
@@ -96,6 +96,7 @@ See [configuration and requirements](docs/guides/configuration.md).
 git clone https://github.com/agency-project/agency.git
 cd agency
 uv sync --locked --python 3.12
+agency install-harnesses codex
 
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="gpt-6-luna"
@@ -105,7 +106,7 @@ uv run python examples/quickstart.py
 
 This runs a native agent in an isolated sandbox. The configured model must support `reasoning_effort="none"`. Model API usage may incur charges.
 
-First startup requires network access for the sandbox image and dependencies. No GPU, ZFS, or CRIU required.
+First startup requires network access for the sandbox image and dependencies.
 
 ### Launch the dashboard
 
