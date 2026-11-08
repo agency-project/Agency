@@ -312,3 +312,17 @@ def test_repr_pending():
     f: Future[agcontext] = Future()
     context = agcontext(_future=f)
     assert "(pending)" in repr(context)
+
+
+def test_message_state_round_trips_the_patches_and_who_made_them():
+    from agency.llm.message_store import MessageBlock
+
+    original = [{"role": "user", "blocks": [{"type": "text", "text": "original"}]}]
+    context = agcontext.from_messages(original)
+    store = context.message_store
+    key = store.add_block(MessageBlock("user", original[0]["blocks"][0]))
+    store.add_patch(key, [], origin="model")
+    state = context.message_state()
+    restored = agcontext(**agcontext.message_state_fields(state))
+    assert restored.message_state() == state
+    assert restored.message_store.patch_origin(key) == "model"

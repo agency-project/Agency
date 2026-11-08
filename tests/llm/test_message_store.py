@@ -16,23 +16,21 @@ from agency.llm.message_store import (
 )
 
 
-def text(role, value, index=0, **extra):
-    return {"role": role, "blocks": [{"type": "text", "index": index, "text": value, **extra}]}
+def text(role, value, **extra):
+    return {"role": role, "blocks": [{"type": "text", "text": value, **extra}]}
 
 
 def tool_use(call_id="c1", arguments='{"cmd": "ls"}'):
     return {
         "role": "assistant",
-        "blocks": [
-            {"type": "tool_use", "index": 0, "id": call_id, "name": "bash", "arguments": arguments}
-        ],
+        "blocks": [{"type": "tool_use", "id": call_id, "name": "bash", "arguments": arguments}],
     }
 
 
 def tool_result(call_id="c1", body="file.txt"):
     return {
         "role": "tool",
-        "blocks": [{"type": "tool_result", "index": 0, "tool_call_id": call_id, "text": body}],
+        "blocks": [{"type": "tool_result", "tool_call_id": call_id, "text": body}],
     }
 
 
@@ -48,8 +46,8 @@ def tool_result(call_id="c1", body="file.txt"):
             {
                 "role": "user",
                 "blocks": [
-                    {"type": "text", "index": 0, "text": "a"},
-                    {"type": "text", "index": 1, "text": "b"},
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
                 ],
             }
         ],  # ... versus one with two blocks
@@ -72,14 +70,14 @@ def test_materialize_returns_exactly_what_was_interned(build):
 
 def test_two_messages_and_one_message_with_two_blocks_have_different_hash_lists():
     store = MessageStore()
-    two = store.add_messages([text("user", "a"), text("user", "b", index=0)])
+    two = store.add_messages([text("user", "a"), text("user", "b")])
     one = store.add_messages(
         [
             {
                 "role": "user",
                 "blocks": [
-                    {"type": "text", "index": 0, "text": "a"},
-                    {"type": "text", "index": 0, "text": "b"},
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
                 ],
             }
         ]
@@ -109,8 +107,8 @@ def test_a_block_differing_in_any_field_is_a_different_entry():
 
 def test_identical_blocks_are_stored_once_and_key_order_is_irrelevant():
     store = MessageStore()
-    a = {"role": "user", "blocks": [{"type": "text", "index": 0, "text": "hi"}]}
-    b = {"blocks": [{"text": "hi", "index": 0, "type": "text"}], "role": "user"}
+    a = {"role": "user", "blocks": [{"type": "text", "text": "hi"}]}
+    b = {"blocks": [{"text": "hi", "type": "text"}], "role": "user"}
     assert store.add_message(a) == store.add_message(b)
     assert len(store.message_block_lookup) == 1 and len(store.message_structure_lookup) == 1
 
@@ -158,8 +156,8 @@ def test_the_lookups_are_plain_json_dicts_that_rebuild_the_messages():
 # -- patches ------------------------------------------------------------------
 
 
-def block(value, index=0):
-    return {"type": "text", "index": index, "text": value}
+def block(value):
+    return {"type": "text", "text": value}
 
 
 def patch(store, role, old, new_blocks):
@@ -227,21 +225,16 @@ def test_patch_can_delete_a_block_and_drops_a_message_that_becomes_empty():
     assert store.materialize(hashes) == [text("user", "a")]
 
 
-def test_patch_can_expand_one_block_into_several_and_renumbers_indices():
+def test_patch_can_expand_one_block_into_several_blocks():
     store = MessageStore()
     message = {
         "role": "user",
-        "blocks": [block("x", 0), block("y", 1), block("z", 2)],
+        "blocks": [block("x"), block("y"), block("z")],
     }
     hashes = store.add_messages([message])
-    patch(store, "user", block("y", 1), [block("y1", 9), block("y2", 9)])
+    patch(store, "user", block("y"), [block("y1"), block("y2")])
     (out,) = store.materialize(hashes)
-    assert [(b["index"], b["text"]) for b in out["blocks"]] == [
-        (0, "x"),
-        (1, "y1"),
-        (2, "y2"),
-        (3, "z"),
-    ]
+    assert [b["text"] for b in out["blocks"]] == ["x", "y1", "y2", "z"]
 
 
 def test_patch_is_keyed_by_role_and_full_content():
@@ -316,7 +309,7 @@ def test_add_block_stores_once_and_takes_only_a_message_block():
 
 
 def test_a_message_block_is_immutable_and_copies_what_it_is_given():
-    fields = {"type": "text", "index": 0, "text": "a"}
+    fields = {"type": "text", "text": "a"}
     b = MessageBlock("user", fields)
     fields["text"] = "changed"
     assert b.to_dict()["text"] == "a"
@@ -414,3 +407,125 @@ def test_the_lock_is_reentrant_and_with_store_holds_it():
         digest = store.add_message({"role": "user", "blocks": [block("x")]})
         assert store._message(digest)["blocks"][0]["text"] == "x"
         assert len(store) == 1
+
+
+# -- a block at another position, and who made a patch -----------------------------
+
+
+def _add_patch(store, role, old_fields, new_fields_list, **kwargs):
+    old = MessageBlock(role, old_fields)
+    with store:
+        store.add_block(old)
+        return store.add_patch(
+            old.hash, [store.add_block(MessageBlock(role, f)) for f in new_fields_list], **kwargs
+        )
+
+
+def _two_blocks(first, second):
+    return {
+        "role": "user",
+        "blocks": [
+            {"type": "text", "text": first},
+            {"type": "text", "text": second},
+        ],
+    }
+
+
+def test_a_patch_still_matches_when_a_block_in_front_shifts_it_back():
+    store = MessageStore()
+    _add_patch(
+        store,
+        "user",
+        {"type": "text", "text": "Alice has a blue car."},
+        [{"type": "text", "text": "Alice has a red car."}],
+    )
+    # The harness put a reminder in front, so the fact is now second.
+    digest = store.add_message(
+        _two_blocks("<system-reminder>x</system-reminder>", "Alice has a blue car.")
+    )
+
+    (message,) = store.materialize([digest])
+    assert [b["text"] for b in message["blocks"]] == [
+        "<system-reminder>x</system-reminder>",
+        "Alice has a red car.",
+    ]
+
+
+def test_the_same_block_at_another_position_is_one_row():
+    store = MessageStore()
+    store.add_messages([text("user", "x"), _two_blocks("y", "x")])
+    assert [p for p in store.message_block_lookup.values() if p.get("text") == "x"] == [
+        {"role": "user", "type": "text", "text": "x"}
+    ]
+
+
+def test_a_patch_replaces_both_of_two_identical_blocks():
+    store = MessageStore()
+    _add_patch(store, "user", {"type": "text", "text": "x"}, [{"type": "text", "text": "X"}])
+    digest = store.add_message(
+        {
+            "role": "user",
+            "blocks": [
+                {"type": "text", "text": "x"},
+                {"type": "text", "text": "y"},
+                {"type": "text", "text": "x"},
+            ],
+        }
+    )
+    (message,) = store.materialize([digest])
+    assert [b["text"] for b in message["blocks"]] == ["X", "y", "X"]
+
+
+def test_materialize_reports_the_patches_it_applied_and_patch_keys_for_finds_them():
+    store = MessageStore()
+    used = _add_patch(store, "user", {"type": "text", "text": "a"}, [{"type": "text", "text": "A"}])
+    _add_patch(store, "user", {"type": "text", "text": "never sent"}, [])
+    digest = store.add_message(_two_blocks("q", "a"))
+    applied: set = set()
+    store.materialize([digest], applied)
+    assert applied == {used}
+    block_hashes = store.message_structure_lookup[digest]["blocks"]
+    assert store.patch_keys_for(block_hashes) == {block_hashes[1]: used}
+
+
+def test_a_patch_records_its_origin_and_removing_or_clearing_forgets_it():
+    store = MessageStore()
+    by_model = _add_patch(store, "user", {"type": "text", "text": "m"}, [], origin="model")
+    by_operator = _add_patch(store, "user", {"type": "text", "text": "o"}, [])
+    assert store.patch_origin(by_model) == "model"
+    assert store.patch_origin(by_operator) == "operator"
+    assert store.message_patch_origin == {by_model: "model"}
+
+    copied = store.copy()
+    assert copied.patch_origin(by_model) == "model"
+    copied.remove_patch(by_model)
+    assert copied.message_patch_origin == {}
+    assert store.message_patch_origin == {by_model: "model"}  # the copy is independent
+
+    # The operator re-patching the same block takes it over.
+    _add_patch(store, "user", {"type": "text", "text": "m"}, [])
+    assert store.patch_origin(by_model) == "operator"
+    _add_patch(store, "user", {"type": "text", "text": "m"}, [], origin="model")
+    store.clear_patches()
+    assert store.message_patch_origin == {}
+
+
+def test_rebuilding_does_not_mutate_nested_stored_blocks():
+    store = MessageStore()
+    messages = [
+        {
+            "role": "user",
+            "blocks": [
+                {"type": "text", "role": "inner", "text": "same"},
+                {"type": "text", "role": "inner", "text": "same"},
+            ],
+        }
+    ]
+    hashes = store.add_messages(messages)
+    before = copy.deepcopy(store.message_block_lookup)
+    assert store.materialize(hashes) == messages
+    assert store.message_block_lookup == before
+    (key,) = store.message_block_lookup
+    store.add_patch(key, [key])
+    assert store.materialize(hashes) == messages
+    assert store.message_block_lookup == before

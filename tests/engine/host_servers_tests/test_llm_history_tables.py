@@ -12,7 +12,7 @@ import sqlite3
 from agency.agcontext import agcontext
 from agency.configs.agconfig import agconfig, dataloggerconfig, llmconfig
 from agency.engine.host_servers.llm_handler_server import LlmHandlerServer
-from agency.llm.message_store import MessageBlock, MessageStore
+from agency.llm.message_store import MessageBlock, MessageStore, with_tool_schema
 from agency.llm.usage_tracker import LlmUsageTracker
 from agency.observability.agdatalogger import (
     agDataLogger,
@@ -49,7 +49,7 @@ class _Backend:
         return {
             "message": {
                 "role": "assistant",
-                "blocks": [{"type": "text", "index": 0, "text": f"reply {n}"}],
+                "blocks": [{"type": "text", "text": f"reply {n}"}],
             },
             "usage": {"prompt_tokens": 10 * n, "completion_tokens": 1},
             "stop_reason": "stop",
@@ -66,7 +66,7 @@ class _Backend:
 
 
 def _text(role, value):
-    return {"role": role, "blocks": [{"type": "text", "index": 0, "text": value}]}
+    return {"role": role, "blocks": [{"type": "text", "text": value}]}
 
 
 def patch(store, role, old, new_blocks):
@@ -79,7 +79,7 @@ def patch(store, role, old, new_blocks):
 
 
 def _block(value):
-    return {"type": "text", "index": 0, "text": value}
+    return {"type": "text", "text": value}
 
 
 def _texts(messages):
@@ -305,7 +305,6 @@ def _tool_exchange(arguments):
             "blocks": [
                 {
                     "type": "tool_use",
-                    "index": 0,
                     "id": "call_1",
                     "name": "bash",
                     "arguments": arguments,
@@ -315,7 +314,7 @@ def _tool_exchange(arguments):
         },
         {
             "role": "tool",
-            "blocks": [{"type": "tool_result", "index": 0, "tool_call_id": "call_1", "text": "ok"}],
+            "blocks": [{"type": "tool_result", "tool_call_id": "call_1", "text": "ok"}],
         },
     ]
 
@@ -351,7 +350,7 @@ def test_the_collector_keeps_every_field_and_can_rebuild_each_request_exactly(tm
 
     # The reply is recorded the same way.
     assert reconstruct_llm_messages(connection, labels[0], "response") == [
-        {"role": "assistant", "blocks": [{"type": "text", "index": 0, "text": "reply 1"}]}
+        {"role": "assistant", "blocks": [{"type": "text", "text": "reply 1"}]}
     ]
     connection.close()
     logger.stop()
@@ -441,8 +440,14 @@ def test_the_collector_keeps_the_patch_table_as_hash_to_hash_links(tmp_path):
             "original_hash": key_split,
             "original": _block("secret"),
             "replacement": [_block("part one"), _block("part two")],
+            "origin": "operator",
         },
-        key_gone: {"original_hash": key_gone, "original": _block("noise"), "replacement": []},
+        key_gone: {
+            "original_hash": key_gone,
+            "original": _block("noise"),
+            "replacement": [],
+            "origin": "operator",
+        },
     }
     assert reconstruct_llm_patches(connection, second) == []
     assert (
@@ -453,3 +458,79 @@ def test_the_collector_keeps_the_patch_table_as_hash_to_hash_links(tmp_path):
     )
     connection.close()
     logger.stop()
+
+
+# -- matching at another position, patch origin, and the latest request ------------
+
+
+def test_a_patch_lands_although_the_harness_put_a_block_in_front_of_the_original(tmp_path):
+    context = agcontext()
+    store = context.message_store
+    old = MessageBlock("user", _block("secret"))
+    with store:
+        store.add_block(old)
+        key = store.add_patch(old.hash, [store.add_block(MessageBlock("user", _block("[x]")))])
+    server, backend = _server(context)
+    shifted = {
+        "role": "user",
+        "blocks": [
+            {"type": "text", "text": "<system-reminder>r</system-reminder>"},
+            {"type": "text", "text": "secret"},
+        ],
+    }
+    server.dispatch({"messages": [_text("user", "task"), shifted]})
+
+    sent = backend.requests[0]["messages"][1]["blocks"]
+    assert [b["text"] for b in sent] == ["<system-reminder>r</system-reminder>", "[x]"]
+    assert server.latest_request()["applied_patch_keys"] == {key}
+
+
+def test_the_collector_records_who_made_each_patch_and_the_block_it_replaced(tmp_path):
+    db_path = str(tmp_path / "agent.db")
+    logger = agDataLogger(agconfig(dataloggerconfig(db_path=db_path)))
+    logger.start()
+    context = agcontext()
+    store = context.message_store
+    old = MessageBlock("user", _block("stale"))
+    with store:
+        store.add_block(old)
+        store.add_patch(
+            old.hash, [store.add_block(MessageBlock("user", _block("fresh")))], origin="model"
+        )
+    server, _backend = _server(context, logger=logger)
+    shifted = {
+        "role": "user",
+        "blocks": [
+            {"type": "text", "text": "front"},
+            {"type": "text", "text": "stale"},
+        ],
+    }
+    server.dispatch({"messages": [shifted]})
+    logger.flush()
+
+    connection = sqlite3.connect(db_path)
+    (call_label,) = [row[0] for row in connection.execute("SELECT call_label FROM exchanges")]
+    (entry,) = reconstruct_llm_patches(connection, call_label)
+    # The original recorded is the block the harness sent.
+    assert entry["original"] == _block("stale")
+    assert entry["replacement"] == [_block("fresh")]
+    assert entry["origin"] == "model"
+
+
+def test_latest_request_is_the_harness_s_own_not_an_internal_one():
+    server, _backend = _server()
+    assert server.latest_request() is None
+    server.dispatch({"messages": [_text("user", "main")]})
+    main = server.latest_request()
+    server.dispatch(
+        {
+            "messages": with_tool_schema(
+                [_text("user", "policy check")], extra={"agency_internal_kind": "check_tool_policy"}
+            )
+        }
+    )
+    assert server.latest_request() == main
+    server.dispatch({"messages": [_text("user", "main"), _text("user", "next")]})
+    latest = server.latest_request()
+    assert latest["seq"] == main["seq"] + 2
+    assert len(latest["harness_message_hashes"]) == 2
