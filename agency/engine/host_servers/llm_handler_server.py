@@ -1364,7 +1364,6 @@ class LlmHandlerServer:
                             idx,
                             {
                                 "type": stream_item["block_type"],
-                                "index": idx,
                                 "text": "",
                                 "signature": "",
                                 "id": "",

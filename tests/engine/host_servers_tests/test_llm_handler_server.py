@@ -1099,7 +1099,7 @@ def test_start_stream_accumulates_tool_call_argument_fragments():
     blocks = [b for b in done["message"]["blocks"] if b["type"] != "metadata"]
     assert len(blocks) == 1
     assert blocks[0]["type"] == "tool_use"
-    assert blocks[0]["index"] == 0
+    assert "index" not in blocks[0]
     assert blocks[0]["id"] == "call_1"
     assert blocks[0]["name"] == "bash"
     assert blocks[0]["arguments"] == '{"cmd":"ls"}'
