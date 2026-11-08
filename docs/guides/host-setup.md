@@ -119,22 +119,21 @@ responses, the public `Agent.run()` API, three invocations per harness, cumulati
 filesystem state, and profiler artifacts. Fast-resume profiles require retained
 CLI/PTY identities and no fallback. It is skipped in ordinary pytest runs.
 
-A CLI image recipe is provided for this test:
+Install the pinned CLIs on the host with `agency install-harnesses`; Agency
+mounts them into the sandbox read-only, so the sandbox image needs no CLIs. An
+image recipe with Python and Agency's runtime packages is provided:
 
 ```sh
-sudo podman build -t localhost/agency-host-harnesses \
-  -f tests/host/fixtures/Dockerfile.harnesses .
+sudo podman build -t localhost/agency-host-sandbox \
+  -f tests/host/fixtures/Dockerfile.sandbox .
 ```
 
-The recipe pins all five CLI versions; the native harness is supplied by Agency.
-Set `AGENCY_TEST_HARNESS_IMAGE=localhost/agency-host-harnesses`. The installed
-binary paths are `/usr/local/bin/claude`, `codex`, `grok`, `opencode`, and `kimi`
-(with the same `/usr/local/bin/` prefix for each).
+Set `AGENCY_TEST_HARNESS_IMAGE=localhost/agency-host-sandbox`. The native harness
+is supplied by Agency.
 
 After provisioning, supply `AGENCY_HOST_LUNA_E2E=1`,
-`AGENCY_TEST_API_KEY_FILE` (a private file), `AGENCY_TEST_HARNESS_IMAGE`, and
-`AGENCY_TEST_{CLAUDE_CODE,CODEX,GROK,OPENCODE,KIMI}_BINARY` paths for installed
-CLIs. Set `AGENCY_HOST_E2E_RESULTS` to the artifact directory, then launch:
+`AGENCY_TEST_API_KEY_FILE` (a private file), and `AGENCY_TEST_HARNESS_IMAGE`.
+Set `AGENCY_HOST_E2E_RESULTS` to the artifact directory, then launch:
 
 ```sh
 # Supply the variables above to this privileged process using your normal
@@ -142,5 +141,5 @@ CLIs. Set `AGENCY_HOST_E2E_RESULTS` to the artifact directory, then launch:
 sudo .venv/bin/agency run -- -m pytest tests/host/test_live_harnesses_linux.py -v
 ```
 
-The installer provisions container/checkpoint infrastructure, not external
-model credentials or third-party CLI installations.
+`agency setup-host` provisions container/checkpoint infrastructure, not external
+model credentials or the harness CLIs (`agency install-harnesses` installs those).

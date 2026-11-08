@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
+import tempfile
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +20,21 @@ from agency.configs.agconfig import (
     llmconfig,
 )
 from agency.engine import harness_daemon_launcher as launcher
+
+
+# A stand-in CLI that exists on this host: the launcher resolves and mounts the
+# configured binary from the host (it never searches PATH or assumes the image
+# has one), so a made-up path would be an error.
+FAKE_CLAUDE = Path(tempfile.gettempdir()) / f"fake-harness-cli-{os.getpid()}" / "claude"
+
+
+@pytest.fixture(autouse=True)
+def _fake_cli():
+    FAKE_CLAUDE.parent.mkdir(parents=True, exist_ok=True)
+    FAKE_CLAUDE.write_text("#!/bin/sh\n")
+    FAKE_CLAUDE.chmod(0o755)
+    yield
+    shutil.rmtree(FAKE_CLAUDE.parent, ignore_errors=True)
 
 
 class _FakeSandbox:
@@ -44,7 +63,7 @@ def _fake_sandbox(tmp_path, *namespaces) -> _FakeSandbox:
 
 
 def test_ensure_harness_daemon_launches_module_with_gateway_socket_paths(monkeypatch, tmp_path):
-    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path="/bin/claude"))
+    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path=str(FAKE_CLAUDE)))
     readiness = iter([False, True])
     monkeypatch.setattr(launcher, "_is_ready", lambda _handle, timeout_s=0.5: next(readiness))
 
@@ -65,7 +84,7 @@ def test_ensure_harness_daemon_launches_module_with_gateway_socket_paths(monkeyp
     assert "--host-uds /var/run/agency_llm_gateway/host-agent.sock" in command
     assert "--sandbox-uds /var/run/agency_llm_gateway/sandbox-agent.sock" in command
     assert "--harness claude_code" in command
-    assert '"binary_path":"/bin/claude"' in command
+    assert f'"binary_path":"{FAKE_CLAUDE}"' in command
     assert f"> {launcher.AGENCY_LOGS_CONTAINER_MOUNT}/daemon-agent-1.log" in command
     assert workdir == "/workspace"
 
@@ -78,7 +97,7 @@ def test_pythonpath_is_exported_not_just_assigned(monkeypatch, tmp_path):
     survived because it already existed in the environment before this
     reassignment, but a brand-new PYTHONPATH did not, until `export` was
     added. See ensure_harness_daemon's command-construction comment."""
-    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path="/bin/claude"))
+    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path=str(FAKE_CLAUDE)))
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
 
     launcher.ensure_harness_daemon(
@@ -109,7 +128,7 @@ def test_package_bootstrap_runs_before_the_daemon_module_is_ever_imported(monkey
     """Importing agency.harness.daemon already needs most of these packages
     transitively -- the bootstrap that installs them must run as its own
     dependency-free command ahead of that import, not inside it."""
-    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path="/bin/claude"))
+    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path=str(FAKE_CLAUDE)))
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
 
     launcher.ensure_harness_daemon(
@@ -130,7 +149,7 @@ def test_package_bootstrap_refuses_install_when_harness_python_is_pinned(monkeyp
 
     sandbox = _fake_sandbox(
         tmp_path,
-        harnessadapterconfig(binary_path="/bin/claude"),
+        harnessadapterconfig(binary_path=str(FAKE_CLAUDE)),
         sandboxconfig(harness_python_path="/opt/e1a1-venv/bin/python"),
     )
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
@@ -150,7 +169,7 @@ def test_pinned_harness_python_path_is_passed_through_for_the_daemon_to_check_it
 
     sandbox = _fake_sandbox(
         tmp_path,
-        harnessadapterconfig(binary_path="/bin/claude"),
+        harnessadapterconfig(binary_path=str(FAKE_CLAUDE)),
         sandboxconfig(harness_python_path="/opt/e1a1-venv/bin/python"),
     )
     monkeypatch.setattr(launcher, "_is_ready", lambda _handle, timeout_s=0.5: True)
@@ -296,14 +315,14 @@ def test_daemon_config_forwards_adapter_and_ptrace_settings_without_credentials(
     """Adapter settings and the daemon's sandbox controls survive JSON transport."""
     config = agconfig(
         harnessadapterconfig(
-            binary_path="/bin/claude", stream_keepalive_s=7.5, allow_subagents=True
+            binary_path=str(FAKE_CLAUDE), stream_keepalive_s=7.5, allow_subagents=True
         ),
         llmconfig(api_key="secret"),
         agentconfig(harness="claude_code"),
     )
 
     result = json.loads(json.dumps(launcher._daemon_config(config)))
-    assert result["harness_adapter"]["binary_path"] == "/bin/claude"
+    assert result["harness_adapter"]["binary_path"] == str(FAKE_CLAUDE)
     assert result["harness_adapter"]["stream_keepalive_s"] == 7.5
     assert result["sandbox"]["harness_python_path"] is None
     assert result["harness_adapter"]["allow_subagents"] is True
@@ -343,7 +362,7 @@ def test_all_external_harnesses_receive_a_resolved_absolute_binary_path(
 
 
 def test_explicit_binary_path_is_resolved_the_same_way(monkeypatch, tmp_path):
-    configured = "/host/install/claude_code/bin/cli"
+    configured = str(FAKE_CLAUDE)
     sandbox = _fake_sandbox(
         tmp_path,
         agentconfig(harness="claude_code"),

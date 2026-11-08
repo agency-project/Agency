@@ -126,14 +126,15 @@ agency install-harnesses            # all five, or name some: agency install-har
 They are self-contained Linux x86-64 executables, put in
 `~/.agency/harnesses/<harness>-<version>` (`$AGENCY_HARNESS_HOME` moves the
 directory). Agency runs them from there and mounts each install read-only into
-the sandbox; nothing is taken from `PATH`. To use another copy, such as one
-installed in your own image, set `harness_adapter.binary_path`; it must report
-the pinned version. If neither exists, starting the agent fails and says to run
+the sandbox. Nothing is taken from `PATH`, and nothing is assumed to exist in
+the sandbox image, which needs no harness CLIs. To use a copy elsewhere on the
+host, set `harness_adapter.binary_path` to its absolute path; it is mounted the
+same way and must report the pinned version. If the managed install and the
+path are both missing, starting the agent fails and says to run
 `agency install-harnesses`.
 
-The [harness image recipe](../../tests/host/fixtures/Dockerfile.harnesses) installs
-the same versions in an image. These integrations are sensitive to CLI versions;
-start with native for the shortest setup.
+These integrations are sensitive to CLI versions; start with native for the
+shortest setup.
 
 ## Work on a project
 

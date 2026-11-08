@@ -404,6 +404,7 @@ class CodexDriver(_HookPtyDriver):
 
 class CodexAdapter(HarnessAdapter):
     _DEFAULT_BINARY = "codex"
+    _HARNESS = "codex"
     _PTY_DRIVER = CodexDriver
     _PROVIDER_NAME = "agency-proxy"
     _ENV_KEY_NAME = "AGENCY_PROXY_API_KEY"

@@ -455,7 +455,6 @@ def test_mcp_adapters_include_separate_sandbox_config(monkeypatch, backend_cls, 
         handle.wait.return_value = ('{"result": "done"}', "", 0)
         return handle
 
-    monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("agency.harness.ptrace.supervisor.agProxyPtrace.launch", launch)
     monkeypatch.setattr(
         "agency.utils.agutil.ensure_python_packages_locally", lambda *args, **kwargs: None

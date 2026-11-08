@@ -4,7 +4,6 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,6 +13,7 @@ from agency.configs.agconfig import agconfig
 from agency.harness.adapters.base import AdapterRuntime, HarnessAdapter
 from agency.harness.adapters.pty.driver import driver_for
 from agency.harness.adapters.pty.execution import PtyExecution
+from agency.harness.pins import managed_binary
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("AGENCY_TEST_EXTERNAL_PTY") != "1",
@@ -24,10 +24,7 @@ REPLY = "hello from the synthetic model"
 
 
 def _binary():
-    root = Path(
-        os.environ.get("AGENCY_TEST_HARNESS_BIN_DIR", Path.home() / ".cache/agency_harness_bin")
-    )
-    return root / "kimi"
+    return managed_binary("kimi")
 
 
 class _Synthetic(BaseHTTPRequestHandler):
@@ -76,8 +73,8 @@ class _Synthetic(BaseHTTPRequestHandler):
 @pytest.mark.timeout(180)
 def test_real_kimi_resumes_from_the_portable_session_blob(tmp_path):
     binary = _binary()
-    if not binary.exists():
-        pytest.skip(f"kimi executable not installed at {binary}")
+    if binary is None:
+        pytest.skip("kimi is not installed; run `agency install-harnesses kimi`")
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Synthetic)
     threading.Thread(target=server.serve_forever, daemon=True).start()

@@ -17,6 +17,7 @@ from agency.configs.agconfig import agconfig, dataloggerconfig, hostserverconfig
 from agency.engine.clients import HarnessInteractionClient
 from agency.engine.host_servers.host_server_manager import HostServerManager
 from agency.harness.daemon import HarnessManager
+from agency.harness.pins import managed_binary
 from agency.harness.protocol import HarnessAttemptRequest, PromptPayload
 from agency.llm.usage_tracker import LlmUsageTracker
 from agency.observability.agdatalogger import agDataLogger
@@ -25,6 +26,13 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("AGENCY_TEST_EXTERNAL_PTY") != "1",
     reason="opt-in real Linux external PTY test",
 )
+
+
+def _managed(harness):
+    binary = managed_binary(harness)
+    if binary is None:
+        pytest.skip(f"{harness} is not installed; run `agency install-harnesses {harness}`")
+    return str(binary)
 
 
 class SyntheticBackend:
@@ -125,14 +133,13 @@ def test_real_external_interrupt_acknowledgment_and_resumed_session(
     root = Path("/tmp") / ("agency-redirect-live-" + uuid.uuid4().hex[:8])
     root.mkdir()
     config = agconfig(
-        llmconfig(model="claude-sonnet-4-6"),
+        # The handler builds a real backend from this config before the test swaps
+        # in the synthetic one, so it needs a (never contacted) base_url.
+        llmconfig(model="claude-sonnet-4-6", base_url="http://127.0.0.1:9/v1"),
         hostserverconfig(uds_path=str(root / "host.sock")),
         dataloggerconfig(db_path=str(root / "agent.db")),
     )
-    binary_root = Path(
-        os.environ.get("AGENCY_TEST_HARNESS_BIN_DIR", Path.home() / ".cache/agency_harness_bin")
-    )
-    config.harness_adapter.binary_path = str(binary_root / harness)
+    config.harness_adapter.binary_path = _managed(harness)
     logger = agDataLogger(config)
     ag = SimpleNamespace(
         agname="redirect-live",
@@ -266,10 +273,7 @@ def test_opencode_terminal_process_tree_is_reaped_repeatedly(tmp_path):
     from agency.harness.ptrace.supervisor import agProxyPtrace
 
     config = agconfig()
-    binary_root = Path(
-        os.environ.get("AGENCY_TEST_HARNESS_BIN_DIR", Path.home() / ".cache/agency_harness_bin")
-    )
-    config.harness_adapter.binary_path = str(binary_root / "opencode")
+    config.harness_adapter.binary_path = _managed("opencode")
     runtime = AdapterRuntime(
         config,
         "test-model",

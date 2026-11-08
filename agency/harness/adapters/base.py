@@ -113,18 +113,27 @@ class HarnessAdapter:
     subclass; don't instantiate a subclass directly."""
 
     _DEFAULT_BINARY: ClassVar[str | None] = None
+    # The agent.harness name (the key in the harness pins) of an external CLI.
+    _HARNESS: ClassVar[str | None] = None
 
     # Fields with no viable fallback for a given agconfig.agent.harness --
     # checked eagerly by _validate_config() on every construction/
     # change_config() call. Empty today: every concrete adapter's
-    # binary_path falls back to its own _DEFAULT_BINARY when unset, so
-    # nothing about agconfig.harness_adapter is strictly required from
-    # agconfig alone. Kept as a real, populated mechanism -- not a stub --
-    # for the day a harness-specific field with no safe default is added.
+    # binary_path falls back to the harness's managed install when unset
+    # (see executable.external_binary()), so nothing about
+    # agconfig.harness_adapter is strictly required from agconfig alone. Kept
+    # as a real, populated mechanism -- not a stub -- for the day a harness-specific field with no safe default is added.
     _REQUIRED_FIELDS_BY_HARNESS: "ClassVar[dict[str, tuple[str, ...]]]" = {}
 
     def __init__(self, agconfig: "agconfig_cls") -> None:
         self.change_config(agconfig)
+
+    def binary(self) -> "str | None":
+        """The external CLI to run: ``binary_path``, else the managed install.
+        Raises HarnessNotInstalled when neither exists; never consults PATH."""
+        from ..executable import external_binary
+
+        return external_binary(self._HARNESS, self.agconfig) if self._HARNESS else None
 
     def change_config(self, agconfig: "agconfig_cls") -> None:
         self.agconfig = agconfig.clone() if agconfig is not None else agconfig_cls()

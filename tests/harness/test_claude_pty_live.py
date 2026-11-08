@@ -17,6 +17,7 @@ from agency.configs.agconfig import agconfig, dataloggerconfig, hostserverconfig
 from agency.engine.clients import HarnessInteractionClient
 from agency.engine.host_servers.host_server_manager import HostServerManager
 from agency.harness.daemon import HarnessManager
+from agency.harness.pins import managed_binary
 from agency.harness.protocol import HarnessAttemptRequest, PromptPayload
 from agency.llm.usage_tracker import LlmUsageTracker
 from agency.observability.agdatalogger import agDataLogger
@@ -77,11 +78,16 @@ def test_real_claude_interrupt_acknowledgment_and_resumed_transcript(mode):
     root = Path("/tmp") / ("agency-redirect-live-" + uuid.uuid4().hex[:8])
     root.mkdir()
     config = agconfig(
-        llmconfig(model="claude-sonnet-4-6"),
+        # The handler builds a real backend from this config before the test swaps
+        # in the synthetic one, so it needs a (never contacted) base_url.
+        llmconfig(model="claude-sonnet-4-6", base_url="http://127.0.0.1:9/v1"),
         hostserverconfig(uds_path=str(root / "host.sock")),
         dataloggerconfig(db_path=str(root / "agent.db")),
     )
-    config.harness_adapter.binary_path = "/usr/local/bin/claude"
+    binary = managed_binary("claude_code")
+    if binary is None:
+        pytest.skip("claude_code is not installed; run `agency install-harnesses claude_code`")
+    config.harness_adapter.binary_path = str(binary)
     logger = agDataLogger(config)
     ag = SimpleNamespace(
         agname="redirect-live",

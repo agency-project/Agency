@@ -1,14 +1,13 @@
 """Launch and discover the sandbox-side Harness Manager daemon.
 
-The host resolves where the harness binary actually lives with a plain
-host-side `shutil.which()` (see `resolve_harness_binary()` in
-`harness/executable.py` -- the install directory is mounted at its original
-host path, so this is where it's found), launches the daemon process
-detached, then polls its `/health` endpoint until it's up or the timeout
-below elapses.
+The host resolves where the harness binary actually lives -- an explicit
+`harness_adapter.binary_path`, else the pinned install in Agency's managed
+harness directory (see `resolve_harness_binary()` in `harness/executable.py`;
+the install directory is mounted at its original host path, so this is where
+it's found) -- launches the daemon process detached, then polls its `/health`
+endpoint until it's up or the timeout below elapses.
 
-Validating the binary actually starts (falling back to its own PATH lookup
-for a binary the host didn't have, e.g. one baked into the sandbox image) is
+Validating the binary actually starts is
 the daemon's own job, done against itself once it's running (see
 `HarnessManager._run_adapter_request()` in `harness/daemon.py` and
 `prepare_harness_executable_local()` in `harness/executable.py`) -- a

@@ -98,6 +98,7 @@ class OpencodeDriver(PtyDriver):
 
 class OpenCodeAdapter(ChatCompletionsProtocol, HarnessAdapter):
     _DEFAULT_BINARY = "opencode"
+    _HARNESS = "opencode"
     _PTY_DRIVER = OpencodeDriver
     _PROVIDER_NAME = "agency-proxy"
 

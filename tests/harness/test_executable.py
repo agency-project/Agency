@@ -6,9 +6,11 @@ import pytest
 
 from agency.configs.agconfig import agconfig, agentconfig, harnessadapterconfig
 from agency.harness import executable, pins
+from agency.harness.adapters.base import HarnessAdapter
+from agency.harness.adapters.pty.driver import driver_for
 
 
-def config_for(harness="claude_code", binary="cli"):
+def config_for(harness="claude_code", binary="/custom/cli"):
     return agconfig(agentconfig(harness=harness), harnessadapterconfig(binary_path=binary))
 
 
@@ -30,8 +32,35 @@ def test_default_is_the_pinned_install_in_the_agency_directory(harness, tmp_path
     assert executable.external_binary(harness, config_for(harness, "/custom/cli")) == "/custom/cli"
 
 
-def test_native_does_not_discover_or_mount_external_files(monkeypatch):
-    monkeypatch.setattr(executable.shutil, "which", Mock(side_effect=AssertionError("lookup")))
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
+def test_adapters_and_pty_drivers_run_the_managed_install_never_path(
+    harness, tmp_path, monkeypatch
+):
+    monkeypatch.setenv(pins.HOME_ENV, str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    adapter = HarnessAdapter.for_config(harness, agconfig())
+    install(tmp_path / "bin" / adapter._DEFAULT_BINARY)  # on PATH, but must be ignored
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    runtime = SimpleNamespace(
+        harness_base_url="http://127.0.0.1:1",
+        token="t",
+        agconfig=adapter.agconfig,
+        model="m",
+        has_sandbox_mcp_tools=False,
+    )
+    with pytest.raises(pins.HarnessNotInstalled):
+        adapter.binary()
+    with pytest.raises(pins.HarnessNotInstalled):
+        driver_for(adapter, runtime, first, None, None, 4)
+    binary = install(pins.install_dir(harness) / pins.BINARY_RELPATH[harness])
+    assert adapter.binary() == str(binary)
+    driver = driver_for(adapter, runtime, second, None, None, 4)
+    assert driver.argv[0] == str(binary)
+
+
+def test_native_does_not_discover_or_mount_external_files():
     config = config_for("native")
     assert executable.harness_installation_mounts(config) == {}
     assert executable.resolve_harness_binary("native", config) is None
@@ -45,8 +74,7 @@ def test_mounts_complete_npm_tree_including_hoisted_native_package(monkeypatch, 
     entry = tmp_path / "bin" / "cli"
     entry.parent.mkdir()
     entry.symlink_to(Path("../lib/node_modules/@vendor/cli/bin/cli.js"))
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(entry))
-    mounts = executable.harness_installation_mounts(config_for("codex"))
+    mounts = executable.harness_installation_mounts(config_for("codex", str(entry)))
     assert list(mounts.values()) == [(str(modules), str(modules), "ro")]
     assert entry.is_symlink()
     assert native.is_relative_to(modules)
@@ -57,8 +85,7 @@ def test_mounts_standalone_install_directory_without_copying(monkeypatch, tmp_pa
     binary = install(root / "1.0")
     entry = tmp_path / "cli"
     entry.symlink_to(binary)
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(entry))
-    mounts = executable.harness_installation_mounts(config_for())
+    mounts = executable.harness_installation_mounts(config_for(binary=str(entry)))
     assert list(mounts.values()) == [(str(root), str(root), "ro")]
     install(root / "2.0")
     assert (Path(next(iter(mounts.values()))[0]) / "2.0").exists()
@@ -71,10 +98,9 @@ def test_app_bin_mount_includes_sibling_data_and_internal_symlinks(monkeypatch, 
     data = install(root / "lib" / "data")
     link = root / "bin" / "data"
     link.symlink_to("../lib/data")
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(binary))
-    assert list(executable.harness_installation_mounts(config_for()).values()) == [
-        (str(root), str(root), "ro")
-    ]
+    assert list(
+        executable.harness_installation_mounts(config_for(binary=str(binary))).values()
+    ) == [(str(root), str(root), "ro")]
     assert link.readlink() == Path("../lib/data")
     assert link.resolve() == data
 
@@ -87,30 +113,38 @@ def test_external_package_symlinks_keep_targets_mounted(monkeypatch, tmp_path):
     (modules / "linked").symlink_to(linked, target_is_directory=True)
     # A reverse link verifies discovery terminates on cycles.
     (linked / "modules").symlink_to(modules, target_is_directory=True)
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(cli))
-    mounts = executable.harness_installation_mounts(config_for("codex"))
+    mounts = executable.harness_installation_mounts(config_for("codex", str(cli)))
     assert set(mounts.values()) == {
         (str(modules), str(modules), "ro"),
         (str(linked), str(linked), "ro"),
     }
 
 
-def test_missing_host_installation_allows_image_provided_cli(monkeypatch):
-    # resolve_harness_binary() only looks host-side -- an image-provided CLI
-    # with no host installation at all is found later, daemon-side, by
-    # prepare_harness_executable_local()'s own PATH fallback.
-    monkeypatch.setattr(executable.shutil, "which", lambda name: None)
-    config = config_for()
-    assert executable.harness_installation_mounts(config) == {}
-    assert executable.resolve_harness_binary("claude_code", config) is None
+def test_missing_host_installation_is_an_error_not_an_image_fallback(tmp_path):
+    # Nothing is assumed to exist in the sandbox image, and PATH is never
+    # consulted: a binary the host doesn't have fails before the container starts.
+    config = config_for(binary=str(tmp_path / "not-there" / "cli"))
+    with pytest.raises(pins.HarnessNotInstalled, match="does not exist on this host"):
+        executable.harness_installation_mounts(config)
+    with pytest.raises(pins.HarnessNotInstalled, match="does not exist on this host"):
+        executable.resolve_harness_binary("claude_code", config)
+
+
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
+def test_binary_path_must_be_absolute_and_path_is_never_searched(harness, tmp_path, monkeypatch):
+    install(tmp_path / "cli")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(ValueError, match="absolute path"):
+        executable.external_binary(harness, config_for(harness, "cli"))
 
 
 def test_prepared_host_symlink_resolves_to_mounted_package(monkeypatch, tmp_path):
     binary = install(tmp_path / "app" / "bin" / "cli")
     entry = tmp_path / "cli"
     entry.symlink_to(binary)
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(entry))
-    assert executable.resolve_harness_binary("codex", config_for("codex")) == str(binary)
+    assert executable.resolve_harness_binary("codex", config_for("codex", str(entry))) == str(
+        binary
+    )
 
 
 def test_prepare_local_validates_the_resolved_binary_runs(monkeypatch, tmp_path):
@@ -139,11 +173,6 @@ def test_prepare_local_rejects_codex_versions_other_than_the_pinned_one(monkeypa
         executable.prepare_harness_executable_local("codex", config)
 
 
-def test_missing_host_installation_resolves_to_none(monkeypatch):
-    monkeypatch.setattr(executable.shutil, "which", lambda name: None)
-    assert executable.resolve_harness_binary("grok", config_for("grok")) is None
-
-
 def test_missing_mount_fails_before_launch(tmp_path):
     missing = tmp_path / "not-there" / "cli"
     config = config_for("grok", str(missing))
@@ -167,28 +196,26 @@ def test_prepare_local_with_missing_runtime_dependencies_fails(monkeypatch, tmp_
 
 
 def test_does_not_mount_entire_system_prefix(monkeypatch):
-    monkeypatch.setattr(executable.shutil, "which", lambda name: "/usr/bin/cli")
+    monkeypatch.setattr(Path, "is_file", lambda self: str(self) == "/usr/bin/cli")
     monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
     with pytest.raises(ValueError, match="dedicated installation"):
-        executable.harness_installation_mounts(config_for())
+        executable.harness_installation_mounts(config_for(binary="/usr/bin/cli"))
 
 
 def test_external_symlink_cannot_expand_mount_to_host_home(monkeypatch, tmp_path):
     binary = install(tmp_path / "app" / "cli")
     (binary.parent / "home").symlink_to(Path.home(), target_is_directory=True)
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(binary))
     with pytest.raises(ValueError, match="broad host directory"):
-        executable.harness_installation_mounts(config_for())
+        executable.harness_installation_mounts(config_for(binary=str(binary)))
 
 
 def test_facade_registers_installation_before_backend_creation(monkeypatch, tmp_path):
     from agency.sandbox.agsandbox import agSandbox
 
     binary = install(tmp_path / "app" / "cli")
-    monkeypatch.setattr(executable.shutil, "which", lambda name: str(binary))
     factory = Mock()
     monkeypatch.setattr("agency.sandbox.agsandbox.agsandbox_backend.for_config", factory)
-    sandbox = agSandbox("mount-order", agconfig=config_for("codex"))
+    sandbox = agSandbox("mount-order", agconfig=config_for("codex", str(binary)))
     try:
         mounts = factory.call_args.kwargs["mounts"]
         assert (str(binary.parent), str(binary.parent), "ro") in mounts.values()

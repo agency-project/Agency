@@ -311,6 +311,7 @@ class KimiDriver(PtyDriver):
 
 class KimiAdapter(ChatCompletionsProtocol, HarnessAdapter):
     _DEFAULT_BINARY = "kimi"
+    _HARNESS = "kimi"
     _PTY_DRIVER = KimiDriver
     _PROVIDER_NAME = _PROVIDER
 

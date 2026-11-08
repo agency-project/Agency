@@ -1,7 +1,9 @@
 """Opt-in public Agent.run example using real EC2 harnesses and a replayed LLM.
 
 Run with AGENCY_HOST_MOCK_E2E=1 and AGENCY_TEST_HARNESS_IMAGE set to an
-image containing all six CLI harnesses. No model credentials are required.
+sandbox image (see tests/host/fixtures/Dockerfile.sandbox). The CLIs are the managed
+installs from `agency install-harnesses`, mounted into it. No model credentials are
+required.
 """
 
 import json

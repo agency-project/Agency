@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agency.configs.agconfig import agconfig
+from agency.configs.agconfig import agconfig, harnessadapterconfig
 from agency.harness.adapters.base import AdapterRuntime, HarnessAdapter
 from agency.harness.adapters.pty.driver import driver_for
 from agency.harness.adapters.pty.execution import (
@@ -23,7 +23,7 @@ SESSION = "session_ef88f4ce-871e-48e3-b200-61666518f9fd"
 @pytest.fixture
 def runtime():
     return AdapterRuntime(
-        agconfig=agconfig(),
+        agconfig=agconfig(harnessadapterconfig(binary_path="/managed/harness-cli")),
         model="a-model",
         engine_name="test",
         harness_base_url="http://127.0.0.1:8766",
@@ -42,7 +42,7 @@ def driver(runtime, tmp_path):
 
 
 def test_launch_is_interactive_and_isolated(driver, runtime, tmp_path):
-    assert driver.argv[0] == "kimi"
+    assert driver.argv[0] == "/managed/harness-cli"
     assert "--auto" in driver.argv
     assert not set(driver.argv) & {"--prompt", "-p", "--output-format", "acp", "web"}
     # KIMI_CODE_HOME is the single switch relocating config, sessions and

@@ -471,8 +471,9 @@ provide shell output without an exit code; the source output is available in
 the inspector, and call completion alone does not establish command or task
 correctness.
 
-The reproducible runner is `examples/12_swebench_live.py`. Start the server
-separately against the same fresh run directory's `logs/`:
+The reproducible runner is `examples/12_swebench_live.py`. Run
+`agency install-harnesses codex` first; the example uses that pinned install.
+Start the server separately against the same fresh run directory's `logs/`:
 
 ```sh
 python examples/12_swebench_live.py \
@@ -480,7 +481,6 @@ python examples/12_swebench_live.py \
   --env-file /absolute/path/to/.env \
   --run-dir /absolute/path/to/fresh-run \
   --image agency/profiler-swebench-requests-1963:20261002 \
-  --codex-binary /absolute/path/to/codex-0.147.0 \
   --model gpt-6-luna
 python -m agency.observability.agwebui.server \
   --run-dir /absolute/path/to/fresh-run/logs --port 7865

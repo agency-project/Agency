@@ -170,6 +170,7 @@ class GrokDriver(_HookPtyDriver):
 
 class GrokAdapter(ChatCompletionsProtocol, HarnessAdapter):
     _DEFAULT_BINARY = "grok"
+    _HARNESS = "grok"
     _PTY_DRIVER = GrokDriver
     _MODEL_NAME = "agency-proxy"
 

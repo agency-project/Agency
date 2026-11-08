@@ -1,0 +1,10 @@
+# Sandbox base image for the opt-in host tests. It holds no harness CLIs:
+# Agency mounts the managed installs (`agency install-harnesses`) into the
+# sandbox read-only. It only needs Python, the runtime libraries those CLIs
+# link against, and the packages the in-sandbox daemon imports (pre-installed
+# so a test run doesn't depend on installing them at startup).
+FROM docker.io/library/python:3.12-slim-bookworm
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git procps libseccomp2 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir fastapi uvicorn openai httpx httpx2 mcp pyseccomp cloudpickle pyte html2text

@@ -50,8 +50,7 @@ packages = ["agency"]
 # The external harness CLIs Agency is verified with. `agency install-harnesses`
 # installs exactly these into ~/.agency/harnesses (or $AGENCY_HARNESS_HOME),
 # Agency runs them from there, and a binary reporting another version is
-# refused. CI and tests/host/fixtures/Dockerfile.harnesses must name the same
-# versions (tests/harness/test_harness_pins.py checks).
+# refused.
 [tool.agency.harnesses]
 claude_code = "2.1.311"
 codex = "0.147.0"

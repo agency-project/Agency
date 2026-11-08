@@ -1,7 +1,8 @@
 """Paid, opt-in public run() E2E on a host provisioned by agency setup-host.
 
 Launch via agency run with AGENCY_HOST_LUNA_E2E=1, AGENCY_TEST_API_KEY_FILE,
-AGENCY_TEST_HARNESS_IMAGE and per-CLI binary paths. Never substitutes model replies.
+AGENCY_TEST_HARNESS_IMAGE. The harness CLIs are the managed installs from
+`agency install-harnesses`, mounted into the sandbox. Never substitutes model replies.
 """
 
 import json
@@ -52,8 +53,6 @@ def test_live_luna_continues_across_invocations(harness, tmp_path, monkeypatch):
     cfg.ptrace.file_access = True
     cfg.resources.idle_cpus = 1
     cfg.resources.idle_memory = "3g"
-    if harness != "native":
-        cfg.harness_adapter.binary_path = os.environ[f"AGENCY_TEST_{harness.upper()}_BINARY"]
     artifact = Path(os.environ.get("AGENCY_HOST_E2E_RESULTS", str(tmp_path))) / harness
     artifact.mkdir(parents=True, exist_ok=True)
     agent = agency.Agent("host-luna-" + harness + "-" + uuid.uuid4().hex[:6], agconfig=cfg)

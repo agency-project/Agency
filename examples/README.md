@@ -40,11 +40,11 @@ are printed under `runs/tutorials/`, and sandboxes are cleaned up on exit.
 Lesson 03 uses a Python image matching the host interpreter because sandbox
 tools serialize Python functions.
 
-Lessons 03 and 10 also use Codex. Set `AGENCY_CODEX_BINARY` to a compatible
-executable if the one on your PATH differs from the version required by Agency:
+Lessons 03 and 10 also use Codex. Run `agency install-harnesses codex` once;
+Agency uses that pinned install and does not look at your PATH:
 
 ```bash
-export AGENCY_CODEX_BINARY="/absolute/path/to/compatible/codex"
+agency install-harnesses codex
 uv run python examples/run_all.py --only 01 03 07 10
 ```
 

@@ -10,25 +10,12 @@ from agency.harness import executable, install, pins
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESSES = ["claude_code", "codex", "grok", "kimi", "opencode"]
-NPM_PACKAGES = {
-    "claude_code": "@anthropic-ai/claude-code",
-    "codex": "@openai/codex",
-    "grok": "@xai-official/grok",
-    "kimi": "@moonshot-ai/kimi-code",
-    "opencode": "opencode-ai",
-}
 
 
 def test_every_external_harness_is_pinned_and_installable():
     assert sorted(pins.harness_pins()) == HARNESSES
     assert sorted(pins.BINARY_RELPATH) == HARNESSES
     assert sorted(install._INSTALLERS) == HARNESSES
-
-
-def test_the_test_image_installs_the_pinned_versions():
-    dockerfile = (ROOT / "tests/host/fixtures/Dockerfile.harnesses").read_text()
-    for harness, package in NPM_PACKAGES.items():
-        assert f"{package}@{pins.harness_pins()[harness]}" in dockerfile.replace("\\\n", " ")
 
 
 def test_ci_installs_the_pinned_versions_from_pyproject():

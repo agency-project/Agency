@@ -476,6 +476,7 @@ class ClaudeDriver(PtyDriver):
 
 class ClaudeCodeAdapter(HarnessAdapter):
     _DEFAULT_BINARY = "claude"
+    _HARNESS = "claude_code"
     _PTY_DRIVER = ClaudeDriver
 
     def run_daemon_attempt(
@@ -500,7 +501,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         """Prepare isolated native configuration; one process belongs to one attempt."""
         from .. import agharness
 
-        resolved = self.agconfig.harness_adapter.binary_path or self._DEFAULT_BINARY
+        resolved = self.binary()
         try:
             if resume_session_id and prior_session_blob is not None:
                 _write_session_blob(

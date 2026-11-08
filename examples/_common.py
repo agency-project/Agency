@@ -26,7 +26,6 @@ from agency.configs.agconfig import (
     agentconfig,
     agconfig,
     llmconfig,
-    harnessadapterconfig,
     orchestratorconfig,
     resourcesconfig,
     sandboxconfig,
@@ -123,7 +122,6 @@ def tutorial_config(
             gpu_passthrough=False,
         ),
         resourcesconfig(idle_cpus=1),
-        harnessadapterconfig(binary_path=os.environ.get("AGENCY_CODEX_BINARY")),
         orchestratorconfig(
             max_concurrent_engines=max_concurrent_engines,
             db_path=str(run_dir / "agency.sqlite3"),
