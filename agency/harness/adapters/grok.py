@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import anyio
+import os
 import shutil
 
 from fastapi import Request
@@ -31,6 +32,7 @@ class GrokDriver(_HookPtyDriver):
     _HOOK_PATH = ("hooks", "agency.json")
 
     def _configure(self, adapter, runtime, max_steps):
+        self._trusted_directory = False
         adapter._write_grok_config(
             self.root,
             runtime.harness_base_url,
@@ -48,9 +50,36 @@ class GrokDriver(_HookPtyDriver):
             self.argv += ["--resume", self.session_id]
         self._write_hooks()
 
-    def ready(self, handle):
+    def _composer_line(self, handle):
         lines, _x, y, _generation = handle.terminal_screen()
         current = lines[y].strip()
+        if current.startswith("│ ❯"):
+            return current
+        # Some Grok releases leave the cursor on the login footer. Only
+        # accept an off-cursor prompt inside the composer's input border.
+        for i in range(len(lines) - 2, 0, -1):
+            if (
+                lines[i].strip().startswith("│ ❯")
+                and lines[i - 1].strip().startswith("╭")
+                and lines[i + 1].strip().startswith("╰")
+            ):
+                return lines[i].strip()
+        return ""
+
+    def ready(self, handle):
+        lines, _x, _y, _generation = handle.terminal_screen()
+        if any("Do you trust the contents of this directory?" in line for line in lines):
+            # Confirm only the sandbox workspace Agency launched, once.
+            cwd_variants = {self.cwd, os.path.realpath(self.cwd)}
+            if (
+                not self._trusted_directory
+                and any(line.strip() in cwd_variants for line in lines)
+                and any("Yes, proceed" in line for line in lines)
+            ):
+                self._trusted_directory = True
+                handle.write_terminal(b"y")
+            return False
+        current = self._composer_line(handle)
         return current.startswith("│ ❯") and not current.removeprefix("│ ❯").rstrip("│ ").strip()
 
     def _submitted_prompt(self, prompt):
@@ -77,7 +106,9 @@ class GrokDriver(_HookPtyDriver):
         # Grok collapses a restored multiline paste into a token. The prompt
         # marker then appears only in the old transcript.
         return (
-            self.ready(handle)
+            # The composer is empty while a turn waits for its response, so an
+            # empty one proves the interrupt only once the cancel footer is gone.
+            (self.ready(handle) and not any("Ctrl+c:cancel" in line for line in lines))
             or any("│ ❯ " + marker in line for line in lines)
             or pasted in lines[y]
         )

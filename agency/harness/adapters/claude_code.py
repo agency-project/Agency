@@ -522,6 +522,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
             (config_home / "events").mkdir()
             hooks_settings = json.dumps(
                 {
+                    # Newer Claude Code reads bypass-mode consent from settings, not
+                    # from .claude.json's bypassPermissionsModeAccepted (below, still
+                    # honored by older releases); without it the first-run dialog
+                    # blocks startup.
+                    "skipDangerousModePermissionPrompt": True,
                     "hooks": {
                         "PreToolUse": [hook_command],
                         "PostToolUse": [hook_command],
@@ -537,7 +542,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
                                 "Notification",
                             )
                         },
-                    }
+                    },
                 }
             )
 
