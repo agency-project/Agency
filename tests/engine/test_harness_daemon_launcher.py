@@ -47,17 +47,16 @@ class _FakeSandbox:
         self.detached.append((command, workdir))
 
     def exec(self, command, **_kwargs):
-        if "command -v" in command:
-            binary = shlex.split(command)[-1]
-            return binary if "/" in binary else f"/usr/bin/{binary}", 0
         return "daemon log", 0
 
 
-def _fake_sandbox(tmp_path, *namespaces) -> _FakeSandbox:
+def _fake_sandbox(tmp_path, *namespaces, stand_in_cli=True) -> _FakeSandbox:
     """A fake sandbox whose agconfig.data_logger.db_path is pinned under
     pytest's own tmp_path -- keeps _preclaim_host_daemon_log's real
     filesystem writes hermetic to the test instead of touching the real
     process-wide agency_runs_dir() default."""
+    if stand_in_cli and not any(isinstance(n, harnessadapterconfig) for n in namespaces):
+        namespaces += (harnessadapterconfig(binary_path=str(FAKE_CLAUDE)),)
     cfg = agconfig(dataloggerconfig(db_path=str(tmp_path / "agent_data.sqlite3")), *namespaces)
     return _FakeSandbox(cfg)
 
@@ -350,7 +349,7 @@ def test_all_external_harnesses_receive_a_resolved_absolute_binary_path(
     fake.parent.mkdir(parents=True)
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
-    sandbox = _fake_sandbox(tmp_path, agentconfig(harness=harness))
+    sandbox = _fake_sandbox(tmp_path, agentconfig(harness=harness), stand_in_cli=False)
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
     launcher.ensure_harness_daemon(
         sandbox, "/tmp/host.sock", "agent-1", harness, agconfig=sandbox.agconfig

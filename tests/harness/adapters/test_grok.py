@@ -7,6 +7,8 @@ from agency.harness.adapters.base import AdapterRuntime
 from agency.harness.adapters.grok import GrokAdapter, GrokDriver, grok_available
 from agency.harness.pins import managed_binary
 
+STAND_IN = "/stand-in/harness-cli"  # adapters only build argv; nothing runs it
+
 
 def test_grok_available_reflects_the_managed_install():
     assert grok_available() == (managed_binary("grok") is not None)
@@ -20,9 +22,13 @@ def _grok_argv(tmp_path, config):
 
 
 def test_grok_disallows_subagents_by_default(tmp_path):
-    assert "--no-subagents" in _grok_argv(tmp_path, agconfig())
+    assert "--no-subagents" in _grok_argv(
+        tmp_path, agconfig(harnessadapterconfig(binary_path=STAND_IN))
+    )
 
 
 def test_grok_omits_no_subagents_when_allowed(tmp_path):
-    argv = _grok_argv(tmp_path, agconfig(harnessadapterconfig(allow_subagents=True)))
+    argv = _grok_argv(
+        tmp_path, agconfig(harnessadapterconfig(allow_subagents=True, binary_path=STAND_IN))
+    )
     assert "--no-subagents" not in argv

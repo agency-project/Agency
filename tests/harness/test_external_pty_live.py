@@ -17,7 +17,7 @@ from agency.configs.agconfig import agconfig, dataloggerconfig, hostserverconfig
 from agency.engine.clients import HarnessInteractionClient
 from agency.engine.host_servers.host_server_manager import HostServerManager
 from agency.harness.daemon import HarnessManager
-from agency.harness.pins import managed_binary
+from tests.harness_installs import require_harness
 from agency.harness.protocol import HarnessAttemptRequest, PromptPayload
 from agency.llm.usage_tracker import LlmUsageTracker
 from agency.observability.agdatalogger import agDataLogger
@@ -29,10 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _managed(harness):
-    binary = managed_binary(harness)
-    if binary is None:
-        pytest.skip(f"{harness} is not installed; run `agency install-harnesses {harness}`")
-    return str(binary)
+    return str(require_harness(harness))
 
 
 class SyntheticBackend:
