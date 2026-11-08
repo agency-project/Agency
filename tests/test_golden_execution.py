@@ -11,8 +11,7 @@ directly.
 Alternatively, install the external CLIs on the host and supply an image with
 their system runtimes through AGENCY_TEST_HARNESS_IMAGE.
 A harness whose CLI is missing from the host, or can't start inside the
-image, is skipped locally; AGENCY_TEST_EXTERNAL_HARNESSES=1 (or CI) makes any
-missing prerequisite fail instead.
+image, is skipped locally; in CI any missing prerequisite fails instead.
 Profiler artifacts: artifacts/golden-execution/<harness>/agprof.trace.json,
 summary.json, summary.md, profile_data.sqlite3, requests.json, and logs/.
 Only model responses are synthetic; containers, daemons, PTYs, and controls are real.
@@ -45,8 +44,10 @@ from agency.configs.agconfig import (
 from agency.engine.host_servers import llm_handler_server
 from agency.engine.host_servers.host_interaction_server import HostInteractionServer
 from agency.harness.executable import harness_installation_mounts, resolve_harness_binary
+from agency.harness.pins import HarnessNotInstalled
 from agency.llm.mock import _MockBackend
 from tests.exchange_helpers import record_exchange
+from tests.harness_installs import container_image_problem, skip_or_fail
 
 
 # for_config() currently uses these strings; there is no harness enum/registry.
@@ -71,27 +72,10 @@ def golden_image():
     if not sys.platform.startswith("linux"):
         problem = "golden profiling and real external harnesses require Linux"
     else:
-        try:
-            subprocess.run([CONTAINER_BACKEND, "info"], capture_output=True, check=True, timeout=15)
-            subprocess.run(
-                [CONTAINER_BACKEND, "image", "inspect", image],
-                capture_output=True,
-                check=True,
-                timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            problem = (
-                f"golden execution requires {CONTAINER_BACKEND} and the local image {image}: {exc}"
-            )
+        problem = container_image_problem(CONTAINER_BACKEND, image)
     if problem:
-        _skip_or_fail(problem)
+        skip_or_fail(problem)
     return image
-
-
-def _skip_or_fail(problem: str) -> None:
-    if os.environ.get("CI") or os.environ.get("AGENCY_TEST_EXTERNAL_HARNESSES") == "1":
-        pytest.fail(problem)
-    pytest.skip(problem)
 
 
 def _harness_problem(harness: str, image: str) -> "str | None":
@@ -101,12 +85,10 @@ def _harness_problem(harness: str, image: str) -> "str | None":
     if harness == "native":
         return None
     config = agconfig(agentconfig(harness=harness))
-    binary = resolve_harness_binary(harness, config)
-    if binary is None:
-        return f"the {harness} CLI is not installed on this host"
     try:
+        binary = resolve_harness_binary(harness, config)
         mounts = harness_installation_mounts(config)
-    except ValueError as exc:
+    except (HarnessNotInstalled, ValueError) as exc:
         return str(exc)
     volumes = [arg for src, dst, mode in mounts.values() for arg in ("-v", f"{src}:{dst}:{mode}")]
     try:
@@ -132,7 +114,7 @@ def _harness_problem(harness: str, image: str) -> "str | None":
 def harness_ready(harness, golden_image):
     problem = _harness_problem(harness, golden_image)
     if problem:
-        _skip_or_fail(problem)
+        skip_or_fail(problem)
 
 
 @pytest.fixture

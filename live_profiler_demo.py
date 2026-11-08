@@ -21,11 +21,6 @@ def main():
     cfg.sandbox.backend = runtime
     cfg.sandbox.gpu_passthrough = False
     cfg.orchestrator.db_path = str(Path(cfg.agent.log_dir) / "global_data.sqlite3")
-    cfg.harness_adapter.binary_path = str(
-        Path(sys.prefix) / "codex-0.147.0/package/vendor/x86_64-unknown-linux-musl/bin/codex"
-    )
-    if not Path(cfg.harness_adapter.binary_path).is_file():
-        raise RuntimeError("The local Codex 0.147.0 binary is missing from this .venv.")
     learner = Agent("live-codex", agconfig=cfg, harness="codex")
     task = agskill(
         name="live_tool_demo",

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import anyio
 import os
-import shutil
 
 from fastapi import Request
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from ..pins import managed_binary
 from ..common import extract_bearer_token
 from .pty.driver import _HookPtyDriver, run_pty_attempt
 from .openai_chat_completions import CHAT_KEEPALIVE_FRAME, ChatCompletionsProtocol, chat_error_frame
@@ -16,7 +16,7 @@ from .streaming import start_streaming_response, stream_response
 
 
 def grok_available() -> bool:
-    return shutil.which("grok") is not None
+    return managed_binary("grok") is not None
 
 
 def _toml_string(value: str) -> str:
@@ -170,6 +170,7 @@ class GrokDriver(_HookPtyDriver):
 
 class GrokAdapter(ChatCompletionsProtocol, HarnessAdapter):
     _DEFAULT_BINARY = "grok"
+    _HARNESS = "grok"
     _PTY_DRIVER = GrokDriver
     _MODEL_NAME = "agency-proxy"
 

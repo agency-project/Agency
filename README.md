@@ -75,7 +75,7 @@ Agency provides a sandboxed execution environment, Python API, supported agent h
 | Model backends | OpenAI Chat Completions / Responses, Anthropic, Amazon Bedrock, OpenAI-compatible endpoints (including vLLM) |
 | Environment | Linux sandboxes using Docker or Podman, with configurable resources and mounts |
 
-Compatibility depends on model capabilities, configuration, and external CLI versions. External harness CLIs must be installed separately.
+Compatibility depends on model capabilities, configuration, and external CLI versions. The external harness CLIs are installed at their pinned versions with `agency install-harnesses` (see [Configuration](docs/guides/configuration.md#agent-harnesses)).
 
 **Experimental:** Integration with existing Claude Code and Codex CLI sessions on Linux is experimental. Profiling, interception, and execution controls may be limited. Python-orchestrated workflows currently provide the most complete experience.
 

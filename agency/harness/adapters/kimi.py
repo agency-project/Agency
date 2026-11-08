@@ -15,18 +15,18 @@ import json
 import posixpath
 import re
 import shlex
-import shutil
 import time
 from pathlib import Path, PurePosixPath
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from ..pins import managed_binary
 from .openai_chat_completions import ChatCompletionsProtocol
 from .pty.driver import PtyDriver, run_pty_attempt
 from .pty.execution import MAX_SESSION_BYTES, restore_session, snapshot_session
 
 
 def kimi_available() -> bool:
-    return shutil.which("kimi") is not None
+    return managed_binary("kimi") is not None
 
 
 _PROVIDER = "agency-proxy"
@@ -311,6 +311,7 @@ class KimiDriver(PtyDriver):
 
 class KimiAdapter(ChatCompletionsProtocol, HarnessAdapter):
     _DEFAULT_BINARY = "kimi"
+    _HARNESS = "kimi"
     _PTY_DRIVER = KimiDriver
     _PROVIDER_NAME = _PROVIDER
 

@@ -18,6 +18,12 @@ from agency.harness.adapters import native as native_module
 from agency.harness.adapters.native import NativeAdapter
 from agency.harness.adapters.opencode import OpenCodeAdapter
 
+STAND_IN = "/stand-in/harness-cli"  # adapters only build argv; nothing runs it
+
+
+def external_config():
+    return agconfig(harnessadapterconfig(binary_path=STAND_IN))
+
 
 def _runtime(*, sandbox=None) -> AdapterRuntime:
     return AdapterRuntime(
@@ -53,7 +59,7 @@ def test_external_adapters_use_the_shared_pty_runner(monkeypatch, backend_cls):
 
     monkeypatch.setattr(PtyExecution, "run", run)
     runtime = _runtime()
-    result = backend_cls(agconfig()).run_daemon_attempt(
+    result = backend_cls(external_config()).run_daemon_attempt(
         runtime,
         prompt="do the thing",
         resume_session_id=None,
@@ -455,7 +461,6 @@ def test_mcp_adapters_include_separate_sandbox_config(monkeypatch, backend_cls, 
         handle.wait.return_value = ('{"result": "done"}', "", 0)
         return handle
 
-    monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("agency.harness.ptrace.supervisor.agProxyPtrace.launch", launch)
     monkeypatch.setattr(
         "agency.utils.agutil.ensure_python_packages_locally", lambda *args, **kwargs: None
@@ -465,10 +470,10 @@ def test_mcp_adapters_include_separate_sandbox_config(monkeypatch, backend_cls, 
         from agency.harness.agharness import cleanup_config_home, materialize_config_home
 
         config_home = materialize_config_home(runtime.engine_name)
-        argv, _ = backend_cls(agconfig()).prepare_pty(runtime, config_home)
+        argv, _ = backend_cls(external_config()).prepare_pty(runtime, config_home)
         cleanup_config_home(config_home)
     else:
-        result = backend_cls(agconfig()).run_daemon_attempt(
+        result = backend_cls(external_config()).run_daemon_attempt(
             runtime, prompt="test", resume_session_id=None, prior_session_blob=None, max_steps=2
         )
         assert result.ok

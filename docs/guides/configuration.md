@@ -109,21 +109,32 @@ worker = Agent(agconfig=cfg, harness="native")
 | `harness` | Program required in the sandbox |
 | --- | --- |
 | `native` | Included with Agency; no separate CLI. |
-| `claude_code` | `claude` |
-| `codex` | `codex` **0.147.0**; other versions are rejected. |
-| `grok` | `grok` |
-| `kimi` | `kimi` |
-| `opencode` | `opencode` |
+| `claude_code` | `claude` **2.1.311** |
+| `codex` | `codex` **0.147.0** |
+| `grok` | `grok` **1.0.77** |
+| `kimi` | `kimi` **2.5.2** |
+| `opencode` | `opencode` **1.19.5** |
 
-Use Linux executables compatible with the sandbox. Agency can mount a host
-CLI's dedicated installation directory, or use a CLI installed in the image.
-An npm installation also needs Node in the image; system interpreters and
-shared libraries are not copied from the host. The default Python image does
-not include Node or these external CLIs.
+Agency is verified with exactly these versions
+(`[tool.agency.harnesses]` in `pyproject.toml`) and refuses a CLI that reports
+another one. Install them with:
 
-The [harness image recipe](../../tests/host/fixtures/Dockerfile.harnesses) shows
-pinned CLI installations used in validation. These integrations are sensitive
-to CLI versions; start with native for the shortest setup.
+```sh
+agency install-harnesses            # all five, or name some: agency install-harnesses codex grok
+```
+
+They are self-contained Linux x86-64 executables, put in
+`~/.agency/harnesses/<harness>-<version>` (`$AGENCY_HARNESS_HOME` moves the
+directory). Agency runs them from there and mounts each install read-only into
+the sandbox. Nothing is taken from `PATH`, and nothing is assumed to exist in
+the sandbox image, which needs no harness CLIs. To use a copy elsewhere on the
+host, set `harness_adapter.binary_path` to its absolute path; it is mounted the
+same way and must report the pinned version. If the managed install and the
+path are both missing, starting the agent fails and says to run
+`agency install-harnesses`.
+
+These integrations are sensitive to CLI versions; start with native for the
+shortest setup.
 
 ## Work on a project
 

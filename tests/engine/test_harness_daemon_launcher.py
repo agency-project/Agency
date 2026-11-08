@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import tempfile
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +22,21 @@ from agency.configs.agconfig import (
 from agency.engine import harness_daemon_launcher as launcher
 
 
+# A stand-in CLI that exists on this host: the launcher resolves and mounts the
+# configured binary from the host (it never searches PATH or assumes the image
+# has one), so a made-up path would be an error.
+FAKE_CLAUDE = Path(tempfile.gettempdir()) / f"fake-harness-cli-{os.getpid()}" / "claude"
+
+
+@pytest.fixture(autouse=True)
+def _fake_cli():
+    FAKE_CLAUDE.parent.mkdir(parents=True, exist_ok=True)
+    FAKE_CLAUDE.write_text("#!/bin/sh\n")
+    FAKE_CLAUDE.chmod(0o755)
+    yield
+    shutil.rmtree(FAKE_CLAUDE.parent, ignore_errors=True)
+
+
 class _FakeSandbox:
     def __init__(self, sandbox_agconfig) -> None:
         self.detached = []
@@ -29,23 +47,22 @@ class _FakeSandbox:
         self.detached.append((command, workdir))
 
     def exec(self, command, **_kwargs):
-        if "command -v" in command:
-            binary = shlex.split(command)[-1]
-            return binary if "/" in binary else f"/usr/bin/{binary}", 0
         return "daemon log", 0
 
 
-def _fake_sandbox(tmp_path, *namespaces) -> _FakeSandbox:
+def _fake_sandbox(tmp_path, *namespaces, stand_in_cli=True) -> _FakeSandbox:
     """A fake sandbox whose agconfig.data_logger.db_path is pinned under
     pytest's own tmp_path -- keeps _preclaim_host_daemon_log's real
     filesystem writes hermetic to the test instead of touching the real
     process-wide agency_runs_dir() default."""
+    if stand_in_cli and not any(isinstance(n, harnessadapterconfig) for n in namespaces):
+        namespaces += (harnessadapterconfig(binary_path=str(FAKE_CLAUDE)),)
     cfg = agconfig(dataloggerconfig(db_path=str(tmp_path / "agent_data.sqlite3")), *namespaces)
     return _FakeSandbox(cfg)
 
 
 def test_ensure_harness_daemon_launches_module_with_gateway_socket_paths(monkeypatch, tmp_path):
-    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path="/bin/claude"))
+    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path=str(FAKE_CLAUDE)))
     readiness = iter([False, True])
     monkeypatch.setattr(launcher, "_is_ready", lambda _handle, timeout_s=0.5: next(readiness))
 
@@ -66,7 +83,7 @@ def test_ensure_harness_daemon_launches_module_with_gateway_socket_paths(monkeyp
     assert "--host-uds /var/run/agency_llm_gateway/host-agent.sock" in command
     assert "--sandbox-uds /var/run/agency_llm_gateway/sandbox-agent.sock" in command
     assert "--harness claude_code" in command
-    assert '"binary_path":"/bin/claude"' in command
+    assert f'"binary_path":"{FAKE_CLAUDE}"' in command
     assert f"> {launcher.AGENCY_LOGS_CONTAINER_MOUNT}/daemon-agent-1.log" in command
     assert workdir == "/workspace"
 
@@ -79,7 +96,7 @@ def test_pythonpath_is_exported_not_just_assigned(monkeypatch, tmp_path):
     survived because it already existed in the environment before this
     reassignment, but a brand-new PYTHONPATH did not, until `export` was
     added. See ensure_harness_daemon's command-construction comment."""
-    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path="/bin/claude"))
+    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path=str(FAKE_CLAUDE)))
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
 
     launcher.ensure_harness_daemon(
@@ -110,7 +127,7 @@ def test_package_bootstrap_runs_before_the_daemon_module_is_ever_imported(monkey
     """Importing agency.harness.daemon already needs most of these packages
     transitively -- the bootstrap that installs them must run as its own
     dependency-free command ahead of that import, not inside it."""
-    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path="/bin/claude"))
+    sandbox = _fake_sandbox(tmp_path, harnessadapterconfig(binary_path=str(FAKE_CLAUDE)))
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
 
     launcher.ensure_harness_daemon(
@@ -131,7 +148,7 @@ def test_package_bootstrap_refuses_install_when_harness_python_is_pinned(monkeyp
 
     sandbox = _fake_sandbox(
         tmp_path,
-        harnessadapterconfig(binary_path="/bin/claude"),
+        harnessadapterconfig(binary_path=str(FAKE_CLAUDE)),
         sandboxconfig(harness_python_path="/opt/e1a1-venv/bin/python"),
     )
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
@@ -151,7 +168,7 @@ def test_pinned_harness_python_path_is_passed_through_for_the_daemon_to_check_it
 
     sandbox = _fake_sandbox(
         tmp_path,
-        harnessadapterconfig(binary_path="/bin/claude"),
+        harnessadapterconfig(binary_path=str(FAKE_CLAUDE)),
         sandboxconfig(harness_python_path="/opt/e1a1-venv/bin/python"),
     )
     monkeypatch.setattr(launcher, "_is_ready", lambda _handle, timeout_s=0.5: True)
@@ -297,14 +314,14 @@ def test_daemon_config_forwards_adapter_and_ptrace_settings_without_credentials(
     """Adapter settings and the daemon's sandbox controls survive JSON transport."""
     config = agconfig(
         harnessadapterconfig(
-            binary_path="/bin/claude", stream_keepalive_s=7.5, allow_subagents=True
+            binary_path=str(FAKE_CLAUDE), stream_keepalive_s=7.5, allow_subagents=True
         ),
         llmconfig(api_key="secret"),
         agentconfig(harness="claude_code"),
     )
 
     result = json.loads(json.dumps(launcher._daemon_config(config)))
-    assert result["harness_adapter"]["binary_path"] == "/bin/claude"
+    assert result["harness_adapter"]["binary_path"] == str(FAKE_CLAUDE)
     assert result["harness_adapter"]["stream_keepalive_s"] == 7.5
     assert result["sandbox"]["harness_python_path"] is None
     assert result["harness_adapter"]["allow_subagents"] is True
@@ -315,24 +332,24 @@ def test_daemon_config_forwards_adapter_and_ptrace_settings_without_credentials(
     assert not any("secret" in json.dumps(section) for section in result.values())
 
 
-@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "opencode"])
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
 def test_all_external_harnesses_receive_a_resolved_absolute_binary_path(
     monkeypatch, tmp_path, harness
 ):
     # The install directory is bind-mounted at its original host path, which
     # the daemon's own (deliberately narrow) PATH can't rediscover on its
-    # own -- a bare default binary name (no explicit binary_path configured)
-    # must come out resolved to an absolute path. A stand-in executable on
-    # PATH keeps this independent of which harness CLIs the host has.
-    from agency.harness.executable import external_binary
+    # own -- the harness's managed install (no explicit binary_path
+    # configured) must come out resolved to an absolute path. A stand-in
+    # executable in a temporary harness home keeps this independent of which
+    # harness CLIs the host has installed.
+    from agency.harness import pins
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake = bin_dir / external_binary(harness, agconfig(agentconfig(harness=harness)))
+    monkeypatch.setenv(pins.HOME_ENV, str(tmp_path / "harnesses"))
+    fake = pins.install_dir(harness) / pins.BINARY_RELPATH[harness]
+    fake.parent.mkdir(parents=True)
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
-    sandbox = _fake_sandbox(tmp_path, agentconfig(harness=harness))
+    sandbox = _fake_sandbox(tmp_path, agentconfig(harness=harness), stand_in_cli=False)
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
     launcher.ensure_harness_daemon(
         sandbox, "/tmp/host.sock", "agent-1", harness, agconfig=sandbox.agconfig
@@ -344,7 +361,7 @@ def test_all_external_harnesses_receive_a_resolved_absolute_binary_path(
 
 
 def test_explicit_binary_path_is_resolved_the_same_way(monkeypatch, tmp_path):
-    configured = "/host/install/claude_code/bin/cli"
+    configured = str(FAKE_CLAUDE)
     sandbox = _fake_sandbox(
         tmp_path,
         agentconfig(harness="claude_code"),

@@ -10,13 +10,13 @@ import anyio
 import json
 import os
 import re
-import shutil
 import uuid
 from pathlib import Path
 
 from fastapi import Request
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from ..pins import managed_binary
 from .pty.driver import PtyDriver, run_pty_attempt
 from .streaming import start_streaming_response, stream_response, upstream_error
 from ...llm.message_store import with_tool_schema
@@ -25,7 +25,7 @@ from ..executable import HARNESS_PATH
 
 
 def claude_code_available() -> bool:
-    return shutil.which("claude") is not None
+    return managed_binary("claude_code") is not None
 
 
 _DEFAULT_TIMEOUT_S = 300
@@ -476,6 +476,7 @@ class ClaudeDriver(PtyDriver):
 
 class ClaudeCodeAdapter(HarnessAdapter):
     _DEFAULT_BINARY = "claude"
+    _HARNESS = "claude_code"
     _PTY_DRIVER = ClaudeDriver
 
     def run_daemon_attempt(
@@ -500,7 +501,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         """Prepare isolated native configuration; one process belongs to one attempt."""
         from .. import agharness
 
-        resolved = self.agconfig.harness_adapter.binary_path or self._DEFAULT_BINARY
+        resolved = self.binary()
         try:
             if resume_session_id and prior_session_blob is not None:
                 _write_session_blob(

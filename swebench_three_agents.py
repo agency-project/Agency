@@ -113,11 +113,6 @@ def main():
     cfg.sandbox.gpu_passthrough = False
     cfg.sandbox.mounts["task_input"] = (str(TASK_DIR / "input"), "/opt/task-input", "ro")
     cfg.orchestrator.db_path = str(Path(cfg.agent.log_dir) / "global_data.sqlite3")
-    cfg.harness_adapter.binary_path = str(
-        Path(sys.prefix) / "codex-0.147.0/package/vendor/x86_64-unknown-linux-musl/bin/codex"
-    )
-    if not Path(cfg.harness_adapter.binary_path).is_file():
-        raise RuntimeError("The pinned Codex binary is missing from .venv.")
     agents = [
         Agent("swe-investigator", agconfig=cfg, harness="codex"),
         Agent("swe-fixer", agconfig=cfg, harness="codex"),

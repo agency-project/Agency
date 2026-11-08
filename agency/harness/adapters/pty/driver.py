@@ -94,7 +94,7 @@ class PtyDriver:
             "XDG_CACHE_HOME": str(root / "cache"),
             "XDG_STATE_HOME": str(root / "state"),
         }
-        self.argv = [adapter.agconfig.harness_adapter.binary_path or self.name]
+        self.argv = [adapter.binary()]
         self._configure(adapter, runtime, max_steps)
 
     def _restore(self, session_id, blob):

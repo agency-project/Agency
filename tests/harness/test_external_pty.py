@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agency.configs.agconfig import agconfig
+from agency.configs.agconfig import agconfig, harnessadapterconfig
 from agency.harness.adapters.base import AdapterRuntime, HarnessAdapter
 from agency.harness.adapters.codex import CodexDriver
 from agency.harness.adapters.opencode import OpencodeDriver
@@ -18,7 +18,7 @@ from agency.harness.adapters.pty.execution import PtyExecution, restore_session,
 @pytest.fixture
 def runtime():
     return AdapterRuntime(
-        agconfig=agconfig(),
+        agconfig=agconfig(harnessadapterconfig(binary_path="/managed/harness-cli")),
         model="a-model",
         engine_name="test",
         harness_base_url="http://127.0.0.1:8766",
@@ -47,7 +47,7 @@ def test_driver_has_only_interactive_launch_and_isolated_config(name, runtime, t
     driver = driver_for(
         HarnessAdapter.for_config(name, runtime.agconfig), runtime, tmp_path, None, None, 4
     )
-    assert driver.argv[0] == name
+    assert driver.argv[0] == "/managed/harness-cli"
     assert not set(driver.argv) & {"exec", "run", "--json", "--format", "--prompt-file"}
     assert driver.env["HOME"] == str(tmp_path)
     assert driver.env["TERM"] == "xterm-256color"

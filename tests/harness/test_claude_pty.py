@@ -40,6 +40,7 @@ def test_claude_native_input_is_acknowledged_or_execution_is_retired(tmp_path, m
     script = Path(__file__).parents[1] / "fixtures" / "claude_pty_cli.py"
     adapter = SimpleNamespace(
         agconfig=agconfig(),
+        binary=lambda: "claude",
         prepare_pty=lambda *args, **kwargs: ([sys.executable, str(script)], env),
     )
     paused = threading.Event()
@@ -140,6 +141,7 @@ def test_autocompact_uses_a_safety_margin_and_claudes_accepted_range(
     )
     adapter = SimpleNamespace(
         agconfig=agconfig(),
+        binary=lambda: "claude",
         prepare_pty=lambda *args, **kwargs: (["claude"], {}),
     )
     runtime = AdapterRuntime(
@@ -164,6 +166,7 @@ def test_no_autocompact_flag_when_context_limit_lookup_fails(tmp_path, monkeypat
     )
     adapter = SimpleNamespace(
         agconfig=agconfig(),
+        binary=lambda: "claude",
         prepare_pty=lambda *args, **kwargs: (["claude"], {}),
     )
     runtime = AdapterRuntime(

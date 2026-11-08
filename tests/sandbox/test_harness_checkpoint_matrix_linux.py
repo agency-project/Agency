@@ -82,15 +82,6 @@ def test_harness_continues_after_checkpoint(runtime, fast, harness, tmp_path, mo
     cfg.ptrace.file_access = True
     cfg.data_logger.db_path = str(tmp_path / "agent.db")
     cfg.host_server.uds_path = str(new_uds_path("matrix-host"))
-    if harness not in {"native", "kimi"}:
-        binary = "claude" if harness == "claude_code" else harness
-        cfg.harness_adapter.binary_path = str(
-            Path(os.environ["AGENCY_TEST_HARNESS_BIN_DIR"]) / binary
-        )
-    if harness == "kimi":
-        cfg.harness_adapter.binary_path = os.environ["AGENCY_TEST_KIMI_BINARY"]
-    if harness == "claude_code" and os.environ.get("AGENCY_TEST_CLAUDE_BINARY"):
-        cfg.harness_adapter.binary_path = os.environ["AGENCY_TEST_CLAUDE_BINARY"]
     sandbox = agSandbox("matrix-" + harness, agconfig=cfg)
     logger = agDataLogger(cfg)
     agent = SimpleNamespace(

@@ -20,7 +20,6 @@ from agency import Agent, agdata, agrawstring, agskill
 from agency.configs.agconfig import (
     agconfig,
     agentconfig,
-    harnessadapterconfig,
     llmconfig,
     orchestratorconfig,
     resourcesconfig,
@@ -112,7 +111,6 @@ def main():
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--image", required=True)
-    parser.add_argument("--codex-binary", required=True)
     parser.add_argument("--source-dir", type=Path, help="Prepared checkout to mount at /testbed")
     parser.add_argument("--test-python", default="/opt/miniconda3/envs/testbed/bin/python")
     parser.add_argument("--harness-python", default="python3")
@@ -150,7 +148,6 @@ def main():
         agentconfig(
             harness="codex", log_dir=str(directory / "logs"), output_dir=str(directory / "output")
         ),
-        harnessadapterconfig(binary_path=args.codex_binary),
         sandboxconfig(
             base_image=args.image,
             gpu_passthrough=False,

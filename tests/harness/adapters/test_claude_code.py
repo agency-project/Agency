@@ -16,10 +16,12 @@ from agency.harness.adapters.claude_code import ClaudeCodeAdapter, claude_code_a
 from agency.harness.adapters.base import AdapterRuntime
 from agency.agskill import agskill
 
+STAND_IN = "/stand-in/harness-cli"  # adapters only build argv; nothing runs it
+
 
 def test_native_launch_uses_attempt_credential_and_lifecycle_hooks(tmp_path, monkeypatch):
     monkeypatch.setattr("agency.harness.agharness.materialize_config_home", lambda *a: tmp_path)
-    config = agconfig()
+    config = agconfig(harnessadapterconfig(binary_path=STAND_IN))
     runtime = AdapterRuntime(
         config, "test-model", "agent", "http://daemon", "attempt-key", MagicMock()
     )
@@ -57,7 +59,7 @@ def test_native_launch_uses_attempt_credential_and_lifecycle_hooks(tmp_path, mon
 
 def test_native_launch_disallows_subagents_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr("agency.harness.agharness.materialize_config_home", lambda *a: tmp_path)
-    config = agconfig()
+    config = agconfig(harnessadapterconfig(binary_path=STAND_IN))
     runtime = AdapterRuntime(
         config, "test-model", "agent", "http://daemon", "attempt-key", MagicMock()
     )
@@ -68,7 +70,7 @@ def test_native_launch_disallows_subagents_by_default(tmp_path, monkeypatch):
 
 def test_native_launch_omits_disallowed_tools_when_subagents_allowed(tmp_path, monkeypatch):
     monkeypatch.setattr("agency.harness.agharness.materialize_config_home", lambda *a: tmp_path)
-    config = agconfig(harnessadapterconfig(allow_subagents=True))
+    config = agconfig(harnessadapterconfig(allow_subagents=True, binary_path=STAND_IN))
     runtime = AdapterRuntime(
         config, "test-model", "agent", "http://daemon", "attempt-key", MagicMock()
     )
@@ -80,7 +82,7 @@ def test_native_launch_restores_conversation_before_resuming(tmp_path, monkeypat
     monkeypatch.setattr("agency.harness.agharness.materialize_config_home", lambda *a: tmp_path)
     from agency.harness.adapters.claude_code import _session_path
 
-    config = agconfig()
+    config = agconfig(harnessadapterconfig(binary_path=STAND_IN))
     runtime = AdapterRuntime(
         config, "test-model", "agent", "http://daemon", "attempt-key", MagicMock()
     )

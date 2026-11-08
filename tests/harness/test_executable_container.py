@@ -1,13 +1,12 @@
-"""Opt-in Linux Docker checks with the real installed external CLIs.
+"""Linux Docker checks with the real installed external CLIs.
 
-AGENCY_TEST_EXTERNAL_HARNESSES=1 AGENCY_TEST_HARNESS_IMAGE=<image> pytest -s ...
-The image must provide system runtimes (notably Node for npm launchers).
-The host PATH must include the installations being tested.
+The CLIs under test are the pinned ones `agency install-harnesses` installs; a
+missing install, docker, or sandbox image skips the test locally and fails it
+in CI. AGENCY_TEST_HARNESS_IMAGE overrides the sandbox image.
 """
 
 import os
 import shlex
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -28,12 +27,18 @@ from agency.harness.executable import (
 )
 from agency.sandbox.agsandbox import agSandbox
 from agency.utils.agutil import agharness_llm_gateway_dir
+from agency.harness.daemon import _REQUIRED_HARNESS_PACKAGES
+from tests.harness_installs import container_image_problem, require_harness, skip_or_fail
 
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("AGENCY_TEST_EXTERNAL_HARNESSES") != "1",
-    reason="opt-in real Linux harness/container test",
-)
+IMAGE = os.environ.get("AGENCY_TEST_HARNESS_IMAGE", "docker.io/library/python:3.12-slim")
+
+
+@pytest.fixture(autouse=True)
+def _docker_and_image():
+    problem = container_image_problem("docker", IMAGE)
+    if problem:
+        skip_or_fail(problem)
 
 
 def _prepare_local_probe(harness: str, binary_path: str) -> str:
@@ -63,22 +68,16 @@ raise SystemExit(rc)
 """
 
 
-@pytest.mark.parametrize(
-    ("harness", "binary"),
-    [("claude_code", "claude"), ("codex", "codex"), ("grok", "grok"), ("opencode", "opencode")],
-)
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
 @pytest.mark.parametrize("explicit_path", [False, True])
-def test_real_installed_cli_launches_from_read_only_installation(harness, binary, explicit_path):
-    host_binary = shutil.which(binary)
-    assert host_binary is not None, f"Install {binary} and add it to the host PATH"
+def test_real_installed_cli_launches_from_read_only_installation(harness, explicit_path):
+    host_binary = str(require_harness(harness))
     config = agconfig(
         agentconfig(harness=harness),
         harnessadapterconfig(binary_path=host_binary if explicit_path else None),
         sandboxconfig(
             backend="docker",
-            base_image=os.environ.get(
-                "AGENCY_TEST_HARNESS_IMAGE", "docker.io/library/python:3.12-slim"
-            ),
+            base_image=IMAGE,
         ),
     )
     resolved = resolve_harness_binary(harness, config)
@@ -94,6 +93,12 @@ def test_real_installed_cli_launches_from_read_only_installation(harness, binary
             )
             assert rc != 0 and "Read-only file system" in out, out
 
+        # The probe imports agency itself, so the image needs its packages; the
+        # daemon installs the same ones when it starts.
+        out, rc = sandbox.exec(
+            "pip install -q " + " ".join(_REQUIRED_HARNESS_PACKAGES), workdir="/", timeout=300
+        )
+        assert rc == 0, out
         sandbox.write_file(
             "/workspace/harness-startup-probe.py", _prepare_local_probe(harness, resolved)
         )
@@ -115,40 +120,16 @@ def test_real_installed_cli_launches_from_read_only_installation(harness, binary
         sandbox.destroy()
 
 
-def test_real_codex_reports_missing_image_node_runtime():
-    config = agconfig(
-        agentconfig(harness="codex"),
-        sandboxconfig(backend="docker", base_image="docker.io/library/python:3.12-slim"),
-    )
-    sandbox = agSandbox("external-missing-node", agconfig=config)
-    try:
-        _, rc = sandbox.exec(f"PATH={HARNESS_PATH} command -v node")
-        if rc == 0:
-            pytest.skip("base image already provides Node")
-        resolved = resolve_harness_binary("codex", config)
-        assert resolved is not None
-        sandbox.write_file(
-            "/workspace/harness-startup-probe.py", _prepare_local_probe("codex", resolved)
-        )
-        out, rc = sandbox.exec(
-            "PYTHONPATH=/opt/agency_pkg python3 /workspace/harness-startup-probe.py", timeout=45
-        )
-        assert rc != 0 and "node" in out.lower(), out
-    finally:
-        sandbox.destroy()
-
-
-@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "opencode"])
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
 def test_real_agent_harness_override_prepares_installation(harness):
     from agency import Agent
 
+    require_harness(harness)
     config = agconfig(
         llmconfig(provider="openai", model="unused-startup-test", api_key="unused"),
         sandboxconfig(
             backend="docker",
-            base_image=os.environ.get(
-                "AGENCY_TEST_HARNESS_IMAGE", "docker.io/library/python:3.12-slim"
-            ),
+            base_image=IMAGE,
         ),
     )
     # This intentionally leaves config.agent.harness at its native default.
