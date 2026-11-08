@@ -47,7 +47,7 @@ from agency.harness.executable import harness_installation_mounts, resolve_harne
 from agency.harness.pins import HarnessNotInstalled
 from agency.llm.mock import _MockBackend
 from tests.exchange_helpers import record_exchange
-from tests.harness_installs import skip_or_fail
+from tests.harness_installs import container_image_problem, skip_or_fail
 
 
 # for_config() currently uses these strings; there is no harness enum/registry.
@@ -72,18 +72,7 @@ def golden_image():
     if not sys.platform.startswith("linux"):
         problem = "golden profiling and real external harnesses require Linux"
     else:
-        try:
-            subprocess.run([CONTAINER_BACKEND, "info"], capture_output=True, check=True, timeout=15)
-            subprocess.run(
-                [CONTAINER_BACKEND, "image", "inspect", image],
-                capture_output=True,
-                check=True,
-                timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            problem = (
-                f"golden execution requires {CONTAINER_BACKEND} and the local image {image}: {exc}"
-            )
+        problem = container_image_problem(CONTAINER_BACKEND, image)
     if problem:
         skip_or_fail(problem)
     return image

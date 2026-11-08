@@ -28,7 +28,7 @@ from agency.harness.executable import (
 from agency.sandbox.agsandbox import agSandbox
 from agency.utils.agutil import agharness_llm_gateway_dir
 from agency.harness.daemon import _REQUIRED_HARNESS_PACKAGES
-from tests.harness_installs import require_harness, skip_or_fail
+from tests.harness_installs import container_image_problem, require_harness, skip_or_fail
 
 
 IMAGE = os.environ.get("AGENCY_TEST_HARNESS_IMAGE", "docker.io/library/python:3.12-slim")
@@ -36,13 +36,9 @@ IMAGE = os.environ.get("AGENCY_TEST_HARNESS_IMAGE", "docker.io/library/python:3.
 
 @pytest.fixture(autouse=True)
 def _docker_and_image():
-    try:
-        subprocess.run(["docker", "info"], capture_output=True, check=True, timeout=15)
-        subprocess.run(
-            ["docker", "image", "inspect", IMAGE], capture_output=True, check=True, timeout=15
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        skip_or_fail(f"requires docker and the local image {IMAGE}: {exc}")
+    problem = container_image_problem("docker", IMAGE)
+    if problem:
+        skip_or_fail(problem)
 
 
 def _prepare_local_probe(harness: str, binary_path: str) -> str:
