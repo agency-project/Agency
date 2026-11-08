@@ -53,11 +53,11 @@ packages = ["agency"]
 # refused. CI and tests/host/fixtures/Dockerfile.harnesses must name the same
 # versions (tests/harness/test_harness_pins.py checks).
 [tool.agency.harnesses]
-claude_code = "2.1.296"
+claude_code = "2.1.311"
 codex = "0.147.0"
-grok = "1.0.67"
-kimi = "0.42.0"
-opencode = "1.18.15"
+grok = "1.0.77"
+kimi = "2.5.2"
+opencode = "1.19.5"
 
 [tool.ruff]
 target-version = "py312"

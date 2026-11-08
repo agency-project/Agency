@@ -6,8 +6,8 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git procps libseccomp2 libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.296 \
-    @xai-official/grok@1.0.67 opencode-ai@1.18.15 @moonshot-ai/kimi-code@0.42.0 \
+RUN npm install -g @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.311 \
+    @xai-official/grok@1.0.77 opencode-ai@1.19.5 @moonshot-ai/kimi-code@2.5.2 \
     && npm cache clean --force
 RUN pip install --no-cache-dir fastapi uvicorn openai httpx httpx2 mcp pyseccomp cloudpickle pyte html2text
 RUN claude --version && codex --version && grok --version && opencode --version && kimi --version

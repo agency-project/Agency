@@ -67,5 +67,5 @@ def managed_binary(harness: str, home: "Path | None" = None) -> "Path | None":
 
 def reports_version(output: str, version: str) -> bool:
     """Whether the ``--version`` output of a harness names exactly *version*
-    (``1.0.6`` is not ``1.0.67``)."""
+    (``1.0.7`` is not ``1.0.77``)."""
     return re.search(rf"(?<![\d.]){re.escape(version)}(?![\d]|\.\d)", output) is not None

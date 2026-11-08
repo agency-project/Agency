@@ -109,11 +109,11 @@ worker = Agent(agconfig=cfg, harness="native")
 | `harness` | Program required in the sandbox |
 | --- | --- |
 | `native` | Included with Agency; no separate CLI. |
-| `claude_code` | `claude` **2.1.296** |
+| `claude_code` | `claude` **2.1.311** |
 | `codex` | `codex` **0.147.0** |
-| `grok` | `grok` **1.0.67** |
-| `kimi` | `kimi` **0.42.0** |
-| `opencode` | `opencode` **1.18.15** |
+| `grok` | `grok` **1.0.77** |
+| `kimi` | `kimi` **2.5.2** |
+| `opencode` | `opencode` **1.19.5** |
 
 Agency is verified with exactly these versions
 (`[tool.agency.harnesses]` in `pyproject.toml`) and refuses a CLI that reports
