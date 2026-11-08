@@ -5,10 +5,10 @@ from unittest.mock import Mock
 import pytest
 
 from agency.configs.agconfig import agconfig, agentconfig, harnessadapterconfig
-from agency.harness import executable
+from agency.harness import executable, pins
 
 
-def config_for(harness="claude_code", binary=None):
+def config_for(harness="claude_code", binary="cli"):
     return agconfig(agentconfig(harness=harness), harnessadapterconfig(binary_path=binary))
 
 
@@ -19,12 +19,14 @@ def install(path, contents=b"executable"):
     return path
 
 
-@pytest.mark.parametrize(
-    ("harness", "binary"),
-    [("claude_code", "claude"), ("codex", "codex"), ("grok", "grok"), ("opencode", "opencode")],
-)
-def test_external_default_comes_from_adapter(harness, binary):
-    assert executable.external_binary(harness, config_for(harness)) == binary
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
+def test_default_is_the_pinned_install_in_the_agency_directory(harness, tmp_path, monkeypatch):
+    monkeypatch.setenv(pins.HOME_ENV, str(tmp_path))
+    config = config_for(harness, None)
+    with pytest.raises(pins.HarnessNotInstalled, match="agency install-harnesses"):
+        executable.external_binary(harness, config)
+    binary = install(pins.install_dir(harness) / pins.BINARY_RELPATH[harness])
+    assert executable.external_binary(harness, config) == str(binary)
     assert executable.external_binary(harness, config_for(harness, "/custom/cli")) == "/custom/cli"
 
 
@@ -122,7 +124,7 @@ def test_prepare_local_validates_the_resolved_binary_runs(monkeypatch, tmp_path)
     assert executable.prepare_harness_executable_local("codex", config) == str(binary)
 
 
-def test_prepare_local_rejects_codex_versions_other_than_0_147_0(monkeypatch, tmp_path):
+def test_prepare_local_rejects_codex_versions_other_than_the_pinned_one(monkeypatch, tmp_path):
     """0.154.0 hangs waiting for native prompt acknowledgment on large
     bracketed pastes (see executable.py); fail closed instead of a
     confusing mid-run submit timeout."""

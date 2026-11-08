@@ -201,8 +201,7 @@ Prerequisites:
   recipes are `runs/swebench/image/Dockerfile` and
   `runs/swebench-three/image/Dockerfile`; the latter inherits
   `localhost/agency-swebench:latest`. Build them with the selected engine if absent.
-- Pinned executable at
-  `.venv/codex-0.147.0/package/vendor/x86_64-unknown-linux-musl/bin/codex`.
+- The pinned Codex, installed with `agency install-harnesses codex`.
 - With default provider settings, exported `OPENAI_API_KEY`; alternatively the
   existing provider-specific variables accepted by `examples/_common.py`.
   `AGENCY_LLM_PROVIDER` and `AGENCY_LLM_MODEL` override repository defaults.

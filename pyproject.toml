@@ -43,6 +43,22 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["agency"]
 
+# agency/harness/pins.py reads [tool.agency.harnesses] from this copy.
+[tool.hatch.build.targets.wheel.force-include]
+"pyproject.toml" = "agency/harness/_pyproject.toml"
+
+# The external harness CLIs Agency is verified with. `agency install-harnesses`
+# installs exactly these into ~/.agency/harnesses (or $AGENCY_HARNESS_HOME),
+# Agency runs them from there, and a binary reporting another version is
+# refused. CI and tests/host/fixtures/Dockerfile.harnesses must name the same
+# versions (tests/harness/test_harness_pins.py checks).
+[tool.agency.harnesses]
+claude_code = "2.1.296"
+codex = "0.147.0"
+grok = "1.0.67"
+kimi = "0.42.0"
+opencode = "1.18.15"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

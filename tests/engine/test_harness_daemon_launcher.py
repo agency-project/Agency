@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import threading
 import time
@@ -315,23 +314,23 @@ def test_daemon_config_forwards_adapter_and_ptrace_settings_without_credentials(
     assert not any("secret" in json.dumps(section) for section in result.values())
 
 
-@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "opencode"])
+@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
 def test_all_external_harnesses_receive_a_resolved_absolute_binary_path(
     monkeypatch, tmp_path, harness
 ):
     # The install directory is bind-mounted at its original host path, which
     # the daemon's own (deliberately narrow) PATH can't rediscover on its
-    # own -- a bare default binary name (no explicit binary_path configured)
-    # must come out resolved to an absolute path. A stand-in executable on
-    # PATH keeps this independent of which harness CLIs the host has.
-    from agency.harness.executable import external_binary
+    # own -- the harness's managed install (no explicit binary_path
+    # configured) must come out resolved to an absolute path. A stand-in
+    # executable in a temporary harness home keeps this independent of which
+    # harness CLIs the host has installed.
+    from agency.harness import pins
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake = bin_dir / external_binary(harness, agconfig(agentconfig(harness=harness)))
+    monkeypatch.setenv(pins.HOME_ENV, str(tmp_path / "harnesses"))
+    fake = pins.install_dir(harness) / pins.BINARY_RELPATH[harness]
+    fake.parent.mkdir(parents=True)
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     sandbox = _fake_sandbox(tmp_path, agentconfig(harness=harness))
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
     launcher.ensure_harness_daemon(

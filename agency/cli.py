@@ -21,6 +21,11 @@ def main(argv=None):
     setup.add_argument(
         "--skip-install", action="store_true", help="Require preinstalled system tools"
     )
+    harnesses = commands.add_parser(
+        "install-harnesses", help="Install the pinned harness CLIs where Agency looks for them"
+    )
+    harnesses.add_argument("names", nargs="*", help="Harnesses to install (default: all)")
+    harnesses.add_argument("--force", action="store_true", help="Reinstall what is already there")
     run = commands.add_parser("run", help="Run Python with the validated rootful host profile")
     run.add_argument(
         "python_args", nargs=argparse.REMAINDER, help="Python script or -m module and args"
@@ -31,6 +36,11 @@ def main(argv=None):
             from agency.host.setup import setup_host
 
             setup_host(args)
+            return 0
+        if args.command == "install-harnesses":
+            from agency.harness.install import install_harnesses
+
+            install_harnesses(args.names, force=args.force)
             return 0
         if os.geteuid() != 0:
             raise ValueError(

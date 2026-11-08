@@ -6,15 +6,15 @@ import json
 import base64
 import sqlite3
 from .pty.execution import MAX_SESSION_BYTES
-import shutil
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from ..pins import managed_binary
 from .openai_chat_completions import ChatCompletionsProtocol
 from .pty.driver import PtyDriver, run_pty_attempt
 
 
 def opencode_available() -> bool:
-    return shutil.which("opencode") is not None
+    return managed_binary("opencode") is not None
 
 
 class OpencodeDriver(PtyDriver):

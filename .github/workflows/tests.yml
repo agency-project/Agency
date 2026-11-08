@@ -48,42 +48,10 @@ jobs:
           uv pip install -e ".[dev]"
 
       - name: Install harness CLIs
-        # Standalone native-binary installers, not `npm install -g`: the npm
-        # packages' JS entry points require a system Node interpreter inside
-        # the sandbox image, which agency/harness/executable.py deliberately
-        # does not provide (see its module docstring) -- these installers
-        # ship self-contained binaries with no such runtime dependency.
-        run: |
-          curl -fsSL https://claude.ai/install.sh | bash
-          CODEX_RELEASE=0.147.0 CODEX_NON_INTERACTIVE=true bash -c "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
-          # The installer's own "latest" resolution hits api.github.com
-          # unauthenticated (60 req/hour, shared across every Actions runner
-          # IP) and can already be rate-limited before we ever run it, failing
-          # with "Failed to fetch version information" independent of anything
-          # in this repo. Resolving it here instead, authenticated with the
-          # workflow's own free GITHUB_TOKEN (5000 req/hour, not shared),
-          # keeps CI on the actual latest release without that exposure.
-          opencode_version=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            https://api.github.com/repos/anomalyco/opencode/releases/latest \
-            | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-          if [ -z "$opencode_version" ]; then
-            echo "Failed to resolve latest opencode version" >&2
-            exit 1
-          fi
-          curl -fsSL https://opencode.ai/install | bash -s -- --version "$opencode_version"
-          # Keep the terminal protocol on the version covered by the Grok
-          # lifecycle test; upstream UI changes can break prompt detection.
-          curl -fsSL https://x.ai/cli/install.sh | bash -s -- 1.0.67
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$HOME/.grok/bin:$PATH"
-          claude --version
-          codex --version
-          opencode --version
-          grok --version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The versions pinned in pyproject.toml ([tool.agency.harnesses]), put
+        # where Agency looks for them (~/.agency/harnesses): self-contained
+        # binaries, with no Node.js needed in the sandbox image.
+        run: uv run agency install-harnesses
 
       - name: Run pytest
         run: uv run pytest

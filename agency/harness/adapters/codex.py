@@ -5,7 +5,6 @@ from __future__ import annotations
 import anyio
 import json
 import os
-import shutil
 import uuid
 from functools import partial
 
@@ -14,13 +13,14 @@ from fastapi import Request
 from ...llm.response_check import tool_arguments_complete
 from ...llm.message_store import with_tool_schema
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from ..pins import managed_binary
 from ..common import extract_bearer_token
 from .pty.driver import _HookPtyDriver, run_pty_attempt
 from .streaming import start_streaming_response, stream_response
 
 
 def codex_available() -> bool:
-    return shutil.which("codex") is not None
+    return managed_binary("codex") is not None
 
 
 _RESPONSES_TYPE_PREFIX = "openai_responses_"

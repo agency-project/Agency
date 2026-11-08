@@ -21,15 +21,38 @@ import subprocess
 from pathlib import Path
 
 from .adapters.base import HarnessAdapter
+from .pins import HarnessNotInstalled, harness_home, harness_pins, managed_binary, reports_version
 
 
 HARNESS_PATH = "/usr/local/bin:/usr/bin:/bin"
 
+# Why another version is refused, where it is known.
+_VERSION_NOTES = {
+    # 0.154.0 hangs waiting for native prompt acknowledgment on large
+    # (>1000 char) bracketed pastes -- the PTY driver's normal submission
+    # path -- because codex routes those through a placeholder/expand-on-
+    # submit pipeline that was heavily refactored between the two versions.
+    "codex": (
+        "Newer builds have hung waiting for native prompt acknowledgment on real "
+        "(large) task prompts. "
+    ),
+}
+
 
 def external_binary(harness, config) -> str | None:
-    adapter = HarnessAdapter.for_config(harness, config)
-    default = adapter._DEFAULT_BINARY
-    return (config.harness_adapter.binary_path or default) if default else None
+    """The harness CLI to run: ``harness_adapter.binary_path`` if set, else the
+    pinned version in Agency's own install directory (harness/pins.py)."""
+    if not HarnessAdapter.for_config(harness, config)._DEFAULT_BINARY:
+        return None
+    if config.harness_adapter.binary_path:
+        return config.harness_adapter.binary_path
+    managed = managed_binary(harness)
+    if managed is None:
+        raise HarnessNotInstalled(
+            f"{harness} {harness_pins().get(harness)} is not installed in {harness_home()}; "
+            "run `agency install-harnesses`, or set harness_adapter.binary_path"
+        )
+    return str(managed)
 
 
 def _installation_root(executable: Path) -> Path:
@@ -143,16 +166,12 @@ def prepare_harness_executable_local(harness: str, config) -> "str | None":
             "Its complete installation must provide its system interpreter and shared "
             f"libraries. Output: {out[-2000:]}"
         )
-    if harness == "codex" and "0.147.0" not in out:
-        # 0.154.0 hangs waiting for native prompt acknowledgment on large
-        # (>1000 char) bracketed pastes -- the PTY driver's normal submission
-        # path -- because codex routes those through a placeholder/expand-on-
-        # submit pipeline that was heavily refactored between the two
-        # versions. Only 0.147.0 is verified working; fail closed instead of
-        # a confusing mid-run submit timeout.
+    pin = harness_pins().get(harness)
+    if pin is not None and not reports_version(out, pin):
+        note = _VERSION_NOTES.get(harness, "")
         raise RuntimeError(
-            f"codex executable {resolved!r} reports version {out.strip()!r}, expected "
-            "0.147.0. Untested/newer codex builds have hung waiting for native prompt "
-            "acknowledgment on real (large) task prompts -- install/pin 0.147.0."
+            f"{harness} executable {resolved!r} reports version {out.strip()!r}, expected "
+            f"{pin}, the only version Agency is verified with. {note}Install it with "
+            "`agency install-harnesses`."
         )
     return resolved
