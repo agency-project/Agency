@@ -21,11 +21,11 @@ def _cfg():
 
 
 def _text(role, value):
-    return {"role": role, "blocks": [{"type": "text", "index": 0, "text": value}]}
+    return {"role": role, "blocks": [{"type": "text", "text": value}]}
 
 
 def _block(value):
-    return {"type": "text", "index": 0, "text": value}
+    return {"type": "text", "text": value}
 
 
 def patch(store, role, old, new_blocks):

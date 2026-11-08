@@ -49,7 +49,7 @@ class _Backend:
         return {
             "message": {
                 "role": "assistant",
-                "blocks": [{"type": "text", "index": 0, "text": f"reply {n}"}],
+                "blocks": [{"type": "text", "text": f"reply {n}"}],
             },
             "usage": {"prompt_tokens": 10 * n, "completion_tokens": 1},
             "stop_reason": "stop",
@@ -66,7 +66,7 @@ class _Backend:
 
 
 def _text(role, value):
-    return {"role": role, "blocks": [{"type": "text", "index": 0, "text": value}]}
+    return {"role": role, "blocks": [{"type": "text", "text": value}]}
 
 
 def patch(store, role, old, new_blocks):
@@ -79,11 +79,6 @@ def patch(store, role, old, new_blocks):
 
 
 def _block(value):
-    return {"type": "text", "index": 0, "text": value}
-
-
-def _stored(value):
-    """``_block`` as stored in ``message_block_lookup``, without its index."""
     return {"type": "text", "text": value}
 
 
@@ -310,7 +305,6 @@ def _tool_exchange(arguments):
             "blocks": [
                 {
                     "type": "tool_use",
-                    "index": 0,
                     "id": "call_1",
                     "name": "bash",
                     "arguments": arguments,
@@ -320,7 +314,7 @@ def _tool_exchange(arguments):
         },
         {
             "role": "tool",
-            "blocks": [{"type": "tool_result", "index": 0, "tool_call_id": "call_1", "text": "ok"}],
+            "blocks": [{"type": "tool_result", "tool_call_id": "call_1", "text": "ok"}],
         },
     ]
 
@@ -356,7 +350,7 @@ def test_the_collector_keeps_every_field_and_can_rebuild_each_request_exactly(tm
 
     # The reply is recorded the same way.
     assert reconstruct_llm_messages(connection, labels[0], "response") == [
-        {"role": "assistant", "blocks": [{"type": "text", "index": 0, "text": "reply 1"}]}
+        {"role": "assistant", "blocks": [{"type": "text", "text": "reply 1"}]}
     ]
     connection.close()
     logger.stop()
@@ -441,17 +435,16 @@ def test_the_collector_keeps_the_patch_table_as_hash_to_hash_links(tmp_path):
     assert {r for _, r in by_original[key_split]} <= stored
 
     rebuilt = {p["original_hash"]: p for p in reconstruct_llm_patches(connection, first)}
-    # Stored blocks have no ``index``: it is a position, which message records keep.
     assert rebuilt == {
         key_split: {
             "original_hash": key_split,
-            "original": _stored("secret"),
-            "replacement": [_stored("part one"), _stored("part two")],
+            "original": _block("secret"),
+            "replacement": [_block("part one"), _block("part two")],
             "origin": "operator",
         },
         key_gone: {
             "original_hash": key_gone,
-            "original": _stored("noise"),
+            "original": _block("noise"),
             "replacement": [],
             "origin": "operator",
         },
@@ -467,7 +460,7 @@ def test_the_collector_keeps_the_patch_table_as_hash_to_hash_links(tmp_path):
     logger.stop()
 
 
-# -- matching at another index, patch origin, and the latest request ---------------
+# -- matching at another position, patch origin, and the latest request ------------
 
 
 def test_a_patch_lands_although_the_harness_put_a_block_in_front_of_the_original(tmp_path):
@@ -481,8 +474,8 @@ def test_a_patch_lands_although_the_harness_put_a_block_in_front_of_the_original
     shifted = {
         "role": "user",
         "blocks": [
-            {"type": "text", "index": 0, "text": "<system-reminder>r</system-reminder>"},
-            {"type": "text", "index": 1, "text": "secret"},
+            {"type": "text", "text": "<system-reminder>r</system-reminder>"},
+            {"type": "text", "text": "secret"},
         ],
     }
     server.dispatch({"messages": [_text("user", "task"), shifted]})
@@ -508,8 +501,8 @@ def test_the_collector_records_who_made_each_patch_and_the_block_it_replaced(tmp
     shifted = {
         "role": "user",
         "blocks": [
-            {"type": "text", "index": 0, "text": "front"},
-            {"type": "text", "index": 1, "text": "stale"},
+            {"type": "text", "text": "front"},
+            {"type": "text", "text": "stale"},
         ],
     }
     server.dispatch({"messages": [shifted]})
@@ -518,31 +511,10 @@ def test_the_collector_records_who_made_each_patch_and_the_block_it_replaced(tmp
     connection = sqlite3.connect(db_path)
     (call_label,) = [row[0] for row in connection.execute("SELECT call_label FROM exchanges")]
     (entry,) = reconstruct_llm_patches(connection, call_label)
-    # The original recorded is the block the harness sent (at index 1).
-    assert entry["original"] == _stored("stale")
-    assert entry["replacement"] == [_stored("fresh")]
+    # The original recorded is the block the harness sent.
+    assert entry["original"] == _block("stale")
+    assert entry["replacement"] == [_block("fresh")]
     assert entry["origin"] == "model"
-
-
-def test_an_old_database_gains_the_origin_column(tmp_path):
-    db_path = str(tmp_path / "agent.db")
-    connection = sqlite3.connect(db_path)
-    connection.execute(
-        "CREATE TABLE message_patch_lookup (call_label TEXT NOT NULL, original_hash TEXT NOT NULL,"
-        " seq INTEGER NOT NULL, replacement_hash TEXT, PRIMARY KEY (call_label, original_hash, seq))"
-    )
-    connection.commit()
-    connection.close()
-
-    logger = agDataLogger(agconfig(dataloggerconfig(db_path=db_path)))
-    logger.start()
-    logger.stop()
-
-    columns = {
-        row[1]
-        for row in sqlite3.connect(db_path).execute("PRAGMA table_info(message_patch_lookup)")
-    }
-    assert "origin" in columns
 
 
 def test_latest_request_is_the_harness_s_own_not_an_internal_one():

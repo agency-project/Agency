@@ -9,8 +9,8 @@ from agency import MessageBlock
 
 ag.pause()                                   # returns once the harness is stopped
 key = ag.patch_history(
-    MessageBlock("user", {"type": "text", "index": 0, "text": "secret"}),        # as sent
-    [MessageBlock("user", {"type": "text", "index": 0, "text": "[redacted]"})],  # replaces it
+    MessageBlock("user", {"type": "text", "text": "secret"}),        # as sent
+    [MessageBlock("user", {"type": "text", "text": "[redacted]"})],  # replaces it
 )
 ag.resume()                                  # the next LLM call carries the patch
 ag.remove_history_patch(key)                 # or ag.clear_history_patches()
@@ -21,9 +21,9 @@ A runnable walkthrough is `examples/13_context_manipulation.py`.
 ## The API
 
 * `MessageBlock(role, fields)` is one content block (`fields` is a mapping in the
-  agency block format, for example `{"type": "text", "index": 0, "text": "..."}`)
+  agency block format, for example `{"type": "text", "text": "..."}`)
   together with the role of the message that carries it. It is immutable and copies
-  `fields`. `.hash` is the SHA-256 of the payload without `index`, which is the key
+  `fields`. `.hash` is the SHA-256 of the block's payload, which is the key
   of its row in `message_block_lookup`; `.role`, `.type`, `.to_dict()` (the block
   without its role) and `.payload` (the stored row) read it back. Two `MessageBlock`s are equal
   when their hashes are. A `tool_use` block has `id`, `name` and `arguments`; a
@@ -36,16 +36,15 @@ A runnable walkthrough is `examples/13_context_manipulation.py`.
     that leaves a `tool_result` without its `tool_use` is not rejected.
   * `new_blocks` is the list of replacement blocks, in order. They are spliced into
     the message as separate, consecutive blocks, not joined. An empty list removes
-    the block, and a message left with no blocks is dropped. `index` fields in a
-    patched message are renumbered to match position.
+    the block, and a message left with no blocks is dropped.
   * `key` is `old_block.hash`; pass it to `remove_history_patch`.
 * `remove_history_patch(key)` removes one patch. `clear_history_patches()` removes
   all of them.
 
 Calling `patch_history` again with the same `old_block` replaces the earlier link.
-A patch matches the block as the harness sends it, wherever it is in its message:
-`index` is not part of the hash, so a block the harness inserts in front of it (a
-Claude Code `<system-reminder>`, say) does not break the match. It replaces every
+A patch matches the block as the harness sends it, wherever it is in its message,
+so a block the harness inserts in front of it (a Claude Code `<system-reminder>`,
+say) does not break the match. It replaces every
 such block, two identical blocks of one message included (a tool call or result is
 unique by id). Patches are not applied
 recursively.
@@ -71,15 +70,14 @@ A request that reached the host server before the patch was made is not patched.
 
 `agency/llm/message_store.py` is shared by the SQLite data collector and `agcontext`:
 
-* a **block** is `{"role", **block}` without `index`, keyed by the SHA-256 of its
-  canonical JSON. Every other field is in the key (tool-call arguments, tool-result
-  content, `citations`, ...), so blocks that differ in any of them are different
-  rows. `index` is the block's position in its message, so the same block at any
-  position is one row.
-* a **message** is `{"role", "blocks": [block hashes], "indexes"?, "extra"?}`, keyed
-  the same way. This keeps message boundaries and each block's `index` (`indexes`),
-  so a rebuilt message is exactly what was seen. A message that is not in the agency shape is
-  stored whole as `{"opaque": message}`.
+* a **block** is `{"role", **block}`, keyed by the SHA-256 of its canonical JSON.
+  The key covers the block's content (tool-call arguments, tool-result content,
+  `citations`, ...), so blocks that differ in any of it are different rows, and the
+  same block anywhere in its message is one row.
+* a **message** is `{"role", "blocks": [block hashes], "extra"?}`, keyed the same
+  way. This keeps message boundaries, the order of the blocks and any message-level
+  fields. A message that is not in the agency shape is stored whole as
+  `{"opaque": message}`.
 
 `agcontext` holds:
 
@@ -134,9 +132,9 @@ harness adapter writes them into the request's `messages` with
 message with role `tool_schema`, placed first, with one block per item and every key
 kept:
 
-* `{"type": "tool_definition", "index": i, "tool": <the whole tool dict>}` per tool;
-* `{"type": "tool_choice", "index": i, "value": <tool_choice>}`;
-* `{"type": "request_extra", "index": i, "value": {<every other field>}}`
+* `{"type": "tool_definition", "tool": <the whole tool dict>}` per tool;
+* `{"type": "tool_choice", "value": <tool_choice>}`;
+* `{"type": "request_extra", "value": {<every other field>}}`
   (the native harness's `agency_internal_kind` is here).
 
 `LlmHandlerServer` and everything on the host see only this message list, so these
@@ -147,8 +145,7 @@ forwards `tools` and `tool_choice` natively and ignores `extra`. `stream` only
 chooses the transport, so the `/dispatch` route removes it and it is not recorded.
 
 An exchange that fails or is cancelled is recorded as one `assistant` response message
-whose single block is `{"type": "error", "index": 0, "error": "<Type: message>"}` or
-`{"type": "cancelled", "index": 0}`.
+whose single block is `{"type": "error", "error": "<Type: message>"}` or `{"type": "cancelled"}`.
 
 ### When hashes are made
 
@@ -220,7 +217,7 @@ and without the `tool_schema` message (the tools of one conversation can change)
 
 ## Limits
 
-* A patch matches the block as the harness sends it (at any `index`). If the
+* A patch matches the block as the harness sends it. If the
   harness rewrites it (compaction, a changed tool result) the patch matches nothing.
   The SQLite record and `latest_request()["applied_patch_keys"]` show which patches
   each request used; the context tools warn the model about its own edits that
@@ -247,18 +244,3 @@ pytest tests/harness/test_agproxy_ptrace.py -k "pause or ack"   # ptrace tests n
 `tests/test_agent_live_patch.py` includes a test that sends a request through a real
 `HostServerManager` over the host UDS, and tests that patch an agent while its skill run
 is active.
-
-### Checkpoint compatibility
-
-Checkpoint message stores now record `message_store_version: 2`. Loading an
-unversioned checkpoint translates its block hashes, message hashes, and patch
-references to the position-independent format. Original indexes and unedited
-blocks are retained, so patches still apply when a harness resends its history
-and can still be reverted. Unversioned checkpoints already using the new hashes
-are supported too.
-
-Migration reports an error when original blocks needed to translate a patch are
-missing, or when blocks differing only in index would merge incompatible edits
-(including an edited occurrence and an unedited one). Resolve those patches with
-the version that created the checkpoint before saving it again. Migration does
-not rewrite the source checkpoint file.

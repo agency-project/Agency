@@ -50,7 +50,7 @@ class _Backend:
         return {
             "message": {
                 "role": "assistant",
-                "blocks": [{"type": "text", "index": 0, "text": "ok"}],
+                "blocks": [{"type": "text", "text": "ok"}],
             },
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
             "stop_reason": "stop",
@@ -60,23 +60,21 @@ class _Backend:
 def _text(role, *texts):
     return {
         "role": role,
-        "blocks": [{"type": "text", "index": i, "text": t} for i, t in enumerate(texts)],
+        "blocks": [{"type": "text", "text": t} for t in texts],
     }
 
 
 def _tool_use(call_id, name, arguments="{}"):
     return {
         "role": "assistant",
-        "blocks": [
-            {"type": "tool_use", "index": 0, "id": call_id, "name": name, "arguments": arguments}
-        ],
+        "blocks": [{"type": "tool_use", "id": call_id, "name": name, "arguments": arguments}],
     }
 
 
 def _tool_result(call_id, body):
     return {
         "role": "tool",
-        "blocks": [{"type": "tool_result", "index": 0, "tool_call_id": call_id, "text": body}],
+        "blocks": [{"type": "tool_result", "tool_call_id": call_id, "text": body}],
     }
 
 
@@ -264,7 +262,6 @@ def test_a_tool_result_keeps_its_pairing_when_edited_or_deleted(run):
     ]
     assert result == {
         "type": "tool_result",
-        "index": 0,
         "tool_call_id": "c1",
         "text": "(log: 2000 lines, nothing relevant)",
     }
@@ -328,7 +325,7 @@ def test_protected_blocks_cannot_be_edited(run, needle, reason):
 def test_signed_reasoning_cannot_be_edited(run):
     thinking = {
         "role": "assistant",
-        "blocks": [{"type": "thinking", "index": 0, "text": "hmm", "signature": "sig"}],
+        "blocks": [{"type": "thinking", "text": "hmm", "signature": "sig"}],
     }
     run.server.dispatch({"messages": [_text("user", "q"), thinking]})
     block_id = _id_of(run.tools.list_context()["context"], "assistant/thinking")
@@ -337,7 +334,7 @@ def test_signed_reasoning_cannot_be_edited(run):
 
 def test_a_block_the_operator_patched_cannot_be_edited_or_reverted(run):
     store = run.server.message_store
-    old = MessageBlock("user", {"type": "text", "index": 0, "text": FACTS})
+    old = MessageBlock("user", {"type": "text", "text": FACTS})
     with store:
         store.add_block(old)
         store.add_patch(

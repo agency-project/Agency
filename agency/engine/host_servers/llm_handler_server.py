@@ -1124,11 +1124,11 @@ class LlmHandlerServer:
         assistant message holding a single ``error`` or ``cancelled`` block."""
         agname = getattr(self._data_logger, "_default_name", None)
         if kind == "cancelled":
-            block = {"type": "cancelled", "index": 0}
+            block = {"type": "cancelled"}
             suffix = "cancelled"
         else:
             suffix = f"{type(error).__name__}: {error}"
-            block = {"type": "error", "index": 0, "error": suffix}
+            block = {"type": "error", "error": suffix}
         call = self._call_messages_of(call_label) if request else None
         with self._message_store:
             if call is not None:

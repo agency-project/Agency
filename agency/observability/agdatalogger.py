@@ -605,13 +605,6 @@ class agDataLogger:
             )
             """
         )
-        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(message_patch_lookup)")}
-        if "origin" not in columns:
-            # A database written before patches had an origin.
-            self._conn.execute(
-                "ALTER TABLE message_patch_lookup "
-                "ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator'"
-            )
         self._conn.commit()
 
     def _maybe_flush_locked(self) -> None:
@@ -825,10 +818,8 @@ def reconstruct_llm_patches(connection: "sqlite3.Connection", call_label: str) -
         ).fetchone()
         return block_of(json.loads(payload))
 
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(message_patch_lookup)")}
-    origin_column = "origin" if "origin" in columns else "'operator'"
     rows = connection.execute(
-        f"SELECT original_hash, replacement_hash, {origin_column} FROM message_patch_lookup "
+        "SELECT original_hash, replacement_hash, origin FROM message_patch_lookup "
         "WHERE call_label = ? ORDER BY rowid",
         (call_label,),
     ).fetchall()
