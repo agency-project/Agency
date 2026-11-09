@@ -30,10 +30,10 @@ class _FakeSandbox:
         self._agname = "test_0000"
         self._cpu_acquired = 0.0
         self._memory_acquired_mb = 0
-        self._gpu_ids: "list[int]" = []
-        self._gpu_count_requested = 0
-        self._gpu_acquire_fn = None
-        self._gpu_release_fn = None
+        self._real_gpu_ids: "list[int]" = []
+        self._virtual_gpu_count_requested = 0
+        self._real_gpu_acquire_fn = None
+        self._real_gpu_release_fn = None
 
     def update_limits(self, cpus=None, memory=None):
         self.last_update = (cpus, memory)
@@ -55,15 +55,15 @@ class _FakeResourcePool:
     def release_cpu_mem(self, sandbox, cpu=False, memory=False):
         self.release_cpu_mem_called_with = (cpu, memory)
 
-    def acquire_gpus(self, sandbox, count, timeout=None):
+    def acquire_real_gpus(self, sandbox, count, timeout=None):
         self.acquire_gpus_called_with = count
         ids = list(range(count))
-        sandbox._gpu_ids = ids
+        sandbox._real_gpu_ids = ids
         return ids
 
-    def release_gpus(self, sandbox, gpu_ids):
+    def release_real_gpus(self, sandbox, gpu_ids):
         self.release_gpus_called_with = list(gpu_ids)
-        sandbox._gpu_ids = []
+        sandbox._real_gpu_ids = []
 
 
 class _FakeDataLogger:
@@ -291,7 +291,7 @@ def test_reserve_resource_cpu_only_leaves_memory_and_gpu_untouched():
     result = _call(server, "reserve_resource", {"cpus": 2.0})
     assert result.is_error is False
     assert pool.acquire_cpu_mem_called_with == (2.0, None)
-    assert sandbox._gpu_count_requested == 0
+    assert sandbox._virtual_gpu_count_requested == 0
     assert not hasattr(pool, "acquire_gpus_called_with")
 
 
@@ -324,15 +324,15 @@ def test_reserve_resource_gpu_only_arms_lazy_acquire_without_calling_the_pool():
     server, sandbox, pool = _make_server(sandbox=sandbox, resource_pool=pool)
     result = _call(server, "reserve_resource", {"gpu": 2})
     assert result.is_error is False
-    assert sandbox._gpu_count_requested == 2
+    assert sandbox._virtual_gpu_count_requested == 2
     assert not hasattr(pool, "acquire_gpus_called_with")
     assert sandbox._cpu_acquired == 0.0
 
     # Lazy acquire/release fns are wrapped (bound to the requesting sandbox)
     # so they can be invoked later with just (count) / (gpu_ids).
-    sandbox._gpu_acquire_fn(2)
+    sandbox._real_gpu_acquire_fn(2)
     assert pool.acquire_gpus_called_with == 2
-    sandbox._gpu_release_fn([0, 1])
+    sandbox._real_gpu_release_fn([0, 1])
     assert pool.release_gpus_called_with == [0, 1]
 
 
@@ -340,7 +340,7 @@ def test_reserve_resource_rejects_gpu_count_exceeding_pool_size():
     server, sandbox, pool = _make_server(sandbox=_FakeSandbox(), resource_pool=_FakeResourcePool())
     result = _call(server, "reserve_resource", {"gpu": 100})
     assert "gpus" in result.content[0].text
-    assert sandbox._gpu_count_requested == 0
+    assert sandbox._virtual_gpu_count_requested == 0
 
 
 def test_reserve_resource_with_nothing_given_returns_an_error():
@@ -351,8 +351,8 @@ def test_reserve_resource_with_nothing_given_returns_an_error():
 
 def test_release_resource_cpu_only_leaves_gpu_untouched():
     sandbox = _FakeSandbox()
-    sandbox._gpu_count_requested = 1
-    sandbox._gpu_ids = [0]
+    sandbox._virtual_gpu_count_requested = 1
+    sandbox._real_gpu_ids = [0]
     pool = _FakeResourcePool()
     server, sandbox, pool = _make_server(sandbox=sandbox, resource_pool=pool)
     result = _call(server, "release_resource", {"cpu": True})
@@ -361,8 +361,8 @@ def test_release_resource_cpu_only_leaves_gpu_untouched():
     # (not omitted), so arg._data.get("memory", False) resolves to None here
     # -- falsy either way, which is all release_cpu_mem's `if memory:` cares about.
     assert pool.release_cpu_mem_called_with == (True, None)
-    assert sandbox._gpu_count_requested == 1
-    assert sandbox._gpu_ids == [0]
+    assert sandbox._virtual_gpu_count_requested == 1
+    assert sandbox._real_gpu_ids == [0]
 
 
 def test_release_resource_cpu_and_memory_together():
@@ -376,17 +376,17 @@ def test_release_resource_cpu_and_memory_together():
 
 def test_release_resource_gpu_releases_held_ids_and_disarms_lazy_acquire():
     sandbox = _FakeSandbox()
-    sandbox._gpu_count_requested = 2
-    sandbox._gpu_ids = [0, 1]
+    sandbox._virtual_gpu_count_requested = 2
+    sandbox._real_gpu_ids = [0, 1]
     pool = _FakeResourcePool()
     server, sandbox, pool = _make_server(sandbox=sandbox, resource_pool=pool)
     result = _call(server, "release_resource", {"gpu": True})
     assert result.is_error is False
     assert pool.release_gpus_called_with == [0, 1]
-    assert sandbox._gpu_ids == []
-    assert sandbox._gpu_count_requested == 0
-    assert sandbox._gpu_acquire_fn is None
-    assert sandbox._gpu_release_fn is None
+    assert sandbox._real_gpu_ids == []
+    assert sandbox._virtual_gpu_count_requested == 0
+    assert sandbox._real_gpu_acquire_fn is None
+    assert sandbox._real_gpu_release_fn is None
 
 
 def test_release_resource_gpu_with_none_reserved_reports_nothing_held():
@@ -406,8 +406,8 @@ def test_get_current_resources_reports_sandbox_and_pool_state():
     sandbox = _FakeSandbox()
     sandbox._cpu_acquired = 2.0
     sandbox._memory_acquired_mb = 512
-    sandbox._gpu_count_requested = 1
-    sandbox._gpu_ids = [0]
+    sandbox._virtual_gpu_count_requested = 1
+    sandbox._real_gpu_ids = [0]
     pool = _FakeResourcePool()
     server, sandbox, pool = _make_server(sandbox=sandbox, resource_pool=pool)
     result = _call(server, "get_current_resources", {})

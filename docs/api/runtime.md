@@ -45,8 +45,8 @@ print(state.running_count, state.blocked_count)
 
 | Method | Contract |
 | --- | --- |
-| `acquire_gpus(sandbox, count, timeout=None, is_cancelled=None, poll_interval=0.5)` | Blocks until grant; returns IDs and attaches them to sandbox. Nonpositive count returns []; count above capacity raises ValueError. Smallest queued count first, FIFO ties. TimeoutError on waiting timeout; GpuWaitCancelled when callback becomes true. |
-| `release_gpus(sandbox, gpu_ids)` | Releases leases and wakes waiters, returns None. Owner must avoid releasing another sandbox's resources. |
+| `acquire_real_gpus(sandbox, count, timeout=None, is_cancelled=None, poll_interval=0.5)` | Blocks until grant; returns IDs and attaches them to sandbox. Nonpositive count returns []; count above capacity raises ValueError. Smallest queued count first, FIFO ties. TimeoutError on waiting timeout; GpuWaitCancelled when callback becomes true. |
+| `release_real_gpus(sandbox, gpu_ids)` | Releases leases and wakes waiters, returns None. Owner must avoid releasing another sandbox's resources. |
 | `acquire_cpu_mem(sandbox, cpus=None, memory_mb=None)` | Sets/bookkeeps limits and returns None; does not wait for a global CPU/memory quota. Floors actual caps at 1 CPU/1024 MB. |
 | `release_cpu_mem(sandbox, cpu=False, memory=False)` | Resets selected limits to idle values, returns None. Neither flag means no selected release. |
 | `get_config_copy()` / `change_config(config)` | Clone return / clone replacement returning None. Totals are not redetected by changing config. |
@@ -153,7 +153,7 @@ def workload():
 
 [Source: agresources.py](../../agency/orchestrator/agresources.py)
 
-[`agency.orchestrator.agresources.agResourcePool`](../../agency/orchestrator/agresources.py#L48): `__init__`, `change_config`, `get_config_copy`, `acquire_gpus`, `release_gpus`, `acquire_cpu_mem`, `release_cpu_mem`.
+[`agency.orchestrator.agresources.agResourcePool`](../../agency/orchestrator/agresources.py#L48): `__init__`, `change_config`, `get_config_copy`, `acquire_real_gpus`, `release_real_gpus`, `acquire_cpu_mem`, `release_cpu_mem`.
 
 [Source: agresources.py](../../agency/orchestrator/agresources.py)
 

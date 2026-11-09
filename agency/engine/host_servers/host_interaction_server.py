@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 # which forces exactly these two past the short-circuit so this class's
 # check_syscall() is actually consulted synchronously for them).
 _GPU_GATED_SYSCALLS = frozenset({"execve", "execveat"})
+_GPU_LEASE_EXEMPT_TOOLS = frozenset({"reserve_resource", "release_resource"})
 
 
 class HostInteractionServer:
@@ -105,7 +106,7 @@ class HostInteractionServer:
             allowed, reason = result if isinstance(result, tuple) else (result, None)
         env_overrides = None
         sandbox = self._sandbox
-        gpu_ids = sandbox.current_gpu_ids() if sandbox is not None else None
+        gpu_ids = sandbox.current_real_gpu_ids() if sandbox is not None else None
         if allowed and syscall.syscall in _GPU_GATED_SYSCALLS and gpu_ids is not None:
             gpu_id_str = ",".join(str(g) for g in gpu_ids) if gpu_ids else "NoDevFiles"
             env_overrides = {"CUDA_VISIBLE_DEVICES": gpu_id_str, "HIP_VISIBLE_DEVICES": gpu_id_str}
@@ -114,9 +115,15 @@ class HostInteractionServer:
     _ADMISSION_LABEL = {"tool": "TOOL   ", "syscall": "SYSCALL"}
 
     def _record_admission(
-        self, kind: str, name: str, attributes: dict, allowed: bool, reason: "str | None" = None
+        self,
+        kind: str,
+        name: str,
+        attributes: dict,
+        allowed: bool,
+        reason: "str | None" = None,
+        call_id: "str | None" = None,
     ) -> str:
-        call_id = uuid.uuid4().hex
+        call_id = call_id or uuid.uuid4().hex
         self.record_event(
             f"{kind}_call",
             {
@@ -353,12 +360,15 @@ class HostInteractionServer:
         """Admission + telemetry entry point for a tool call."""
         allowed, reason = self.check_tool(tool_name, tool_input)
         sandbox = self._sandbox
-        if allowed and sandbox is not None:
+        call_id = uuid.uuid4().hex
+        if allowed and sandbox is not None and tool_name not in _GPU_LEASE_EXEMPT_TOOLS:
             try:
-                sandbox.ensure_gpu_acquired(self._agname, is_cancelled=self._is_cancelled)
+                sandbox.ensure_real_gpu_acquired(
+                    self._agname, is_cancelled=self._is_cancelled, holder=call_id
+                )
             except GpuWaitCancelled:
                 allowed, reason = False, "agent invocation cancelled"
-        gpu_ids = sandbox.current_gpu_ids() if sandbox is not None else None
+        gpu_ids = sandbox.current_real_gpu_ids() if sandbox is not None else None
         identity = model_tool_call_id or (
             annotation.get("model_tool_call_id") if isinstance(annotation, dict) else None
         )
@@ -383,6 +393,7 @@ class HostInteractionServer:
             },
             allowed,
             reason,
+            call_id=call_id,
         )
         return {"allowed": allowed, "reason": reason, "call_id": call_id}
 
@@ -394,16 +405,20 @@ class HostInteractionServer:
         duration_ns: int | None = None,
         started_wall_ns: int | None = None,
     ) -> None:
-        self._record_completion(
-            "tool",
-            call_id,
-            {
-                "result": result,
-                "error": error,
-                **({"duration_ns": duration_ns} if duration_ns is not None else {}),
-                **({"started_wall_ns": started_wall_ns} if started_wall_ns is not None else {}),
-            },
-        )
+        try:
+            self._record_completion(
+                "tool",
+                call_id,
+                {
+                    "result": result,
+                    "error": error,
+                    **({"duration_ns": duration_ns} if duration_ns is not None else {}),
+                    **({"started_wall_ns": started_wall_ns} if started_wall_ns is not None else {}),
+                },
+            )
+        finally:
+            if self._sandbox is not None:
+                self._sandbox.release_real_gpu_when_idle(call_id)
 
     def admit_syscall(self, syscall: "agsyscallevent") -> dict:
         """Admission + telemetry entry point for a syscall"""

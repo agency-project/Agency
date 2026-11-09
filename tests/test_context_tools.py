@@ -469,8 +469,8 @@ def test_a_model_edit_through_the_real_host_server_reaches_the_backend_and_the_r
         llm_usage_tracker=LlmUsageTracker(),
     )
     sandbox = SimpleNamespace(
-        ensure_gpu_acquired=lambda _agname, *, is_cancelled: None,
-        current_gpu_ids=lambda: None,
+        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled, holder=None: None,
+        current_real_gpu_ids=lambda: None,
     )
     context = agcontext()
     skill = agskill(

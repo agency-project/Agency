@@ -83,24 +83,33 @@ def _make_server(policy=None, data_logger=None, is_cancelled=None, agname="agent
 
 
 class _FakeSandbox:
-    """Mimics agSandbox's GPU surface (no real daemon handle here, so
-    ensure_gpu_acquired() is a direct passthrough, no pause/resume)."""
-
-    def __init__(self, gpu_count_requested=0, gpu_ids=None):
-        self._gpu_count_requested = gpu_count_requested
-        self._gpu_ids = list(gpu_ids or [])
+    def __init__(self, gpu_count_requested=0, gpu_ids=None, gpu_passthrough=True):
+        self._virtual_gpu_count_requested = gpu_count_requested
+        self._real_gpu_ids = list(gpu_ids or [])
+        self.gpu_passthrough = gpu_passthrough
         self.acquire_calls = []
+        self.holders = set()
+        self.release_calls = []
 
-    def current_gpu_ids(self):
-        if self._gpu_count_requested <= 0:
-            return None
-        return list(self._gpu_ids)
+    def current_real_gpu_ids(self):
+        if self._virtual_gpu_count_requested <= 0:
+            return [] if self.gpu_passthrough else None
+        return list(self._real_gpu_ids)
 
-    def ensure_gpu_acquired(self, agname, *, is_cancelled=None):
-        if self._gpu_count_requested <= 0 or self._gpu_ids:
+    def ensure_real_gpu_acquired(self, agname, *, is_cancelled=None, holder=None):
+        if self._virtual_gpu_count_requested <= 0:
             return
-        self.acquire_calls.append(self._gpu_count_requested)
-        self._gpu_ids = [0]
+        if not self._real_gpu_ids:
+            self.acquire_calls.append(self._virtual_gpu_count_requested)
+            self._real_gpu_ids = [0]
+        if holder is not None:
+            self.holders.add(holder)
+
+    def release_real_gpu_when_idle(self, holder=None):
+        self.release_calls.append(holder)
+        self.holders.discard(holder)
+        if not self.holders:
+            self._real_gpu_ids = []
 
 
 def _make_syscall(
@@ -702,7 +711,7 @@ def test_check_tool_never_physically_acquires_a_gpu():
     server = _make_server(sandbox=sandbox)
     assert server.check_tool("bash", {"cmd": "ls"}) == (True, None)
     assert sandbox.acquire_calls == []
-    assert sandbox._gpu_ids == []
+    assert sandbox._real_gpu_ids == []
 
 
 def test_admit_tool_call_acquires_gpu_when_reserved_but_not_yet_held():
@@ -711,7 +720,7 @@ def test_admit_tool_call_acquires_gpu_when_reserved_but_not_yet_held():
     result = server.admit_tool_call("bash", {"cmd": "ls"})
     assert (result["allowed"], result["reason"]) == (True, None)
     assert sandbox.acquire_calls == [1]
-    assert sandbox._gpu_ids == [0]
+    assert sandbox._real_gpu_ids == [0]
 
 
 def test_admit_tool_call_does_not_reacquire_once_gpu_already_held():
@@ -720,7 +729,7 @@ def test_admit_tool_call_does_not_reacquire_once_gpu_already_held():
     result = server.admit_tool_call("bash", {"cmd": "ls"})
     assert (result["allowed"], result["reason"]) == (True, None)
     assert sandbox.acquire_calls == []
-    assert sandbox._gpu_ids == [3]
+    assert sandbox._real_gpu_ids == [3]
 
 
 def test_admit_tool_call_is_a_noop_when_sandbox_never_reserved_a_gpu():
@@ -799,9 +808,71 @@ def test_check_syscall_has_no_env_overrides_for_non_gated_syscalls():
     assert env_overrides is None
 
 
-def test_check_syscall_has_no_env_overrides_when_sandbox_never_reserved_a_gpu():
+def test_check_syscall_hides_gpus_when_sandbox_never_reserved_a_gpu():
     sandbox = _FakeSandbox(gpu_count_requested=0)
     server = _make_server(sandbox=sandbox)
     allowed, reason, env_overrides = server.check_syscall(_make_syscall(syscall="execve"))
     assert (allowed, reason) == (True, None)
+    assert env_overrides == {
+        "CUDA_VISIBLE_DEVICES": "NoDevFiles",
+        "HIP_VISIBLE_DEVICES": "NoDevFiles",
+    }
+
+
+def test_check_syscall_has_no_env_overrides_when_gpu_passthrough_is_off():
+    sandbox = _FakeSandbox(gpu_count_requested=0, gpu_passthrough=False)
+    server = _make_server(sandbox=sandbox)
+    allowed, reason, env_overrides = server.check_syscall(_make_syscall(syscall="execve"))
+    assert (allowed, reason) == (True, None)
     assert env_overrides is None
+
+
+def test_complete_tool_call_releases_real_gpu_when_the_call_ends():
+    sandbox = _FakeSandbox(gpu_count_requested=1)
+    server = _make_server(sandbox=sandbox)
+    call_id = server.admit_tool_call("bash", {"cmd": "ls"})["call_id"]
+    assert sandbox._real_gpu_ids == [0]
+    server.complete_tool_call(call_id, result={"stdout": "ok"})
+    assert sandbox.release_calls == [call_id]
+    assert sandbox._real_gpu_ids == []
+    assert sandbox._virtual_gpu_count_requested == 1
+
+
+def test_real_gpu_is_reacquired_by_the_next_tool_call():
+    sandbox = _FakeSandbox(gpu_count_requested=1)
+    server = _make_server(sandbox=sandbox)
+    first = server.admit_tool_call("bash", {"cmd": "ls"})["call_id"]
+    server.complete_tool_call(first, result={})
+    server.admit_tool_call("bash", {"cmd": "ls"})
+    assert sandbox.acquire_calls == [1, 1]
+    assert sandbox._real_gpu_ids == [0]
+
+
+def test_parallel_tool_calls_keep_the_real_gpu_until_the_last_one_completes():
+    sandbox = _FakeSandbox(gpu_count_requested=1)
+    server = _make_server(sandbox=sandbox)
+    first = server.admit_tool_call("bash", {"cmd": "a"})["call_id"]
+    second = server.admit_tool_call("bash", {"cmd": "b"})["call_id"]
+    server.complete_tool_call(first, result={})
+    assert sandbox._real_gpu_ids == [0]
+    server.complete_tool_call(second, result={})
+    assert sandbox._real_gpu_ids == []
+    assert sandbox.acquire_calls == [1]
+
+
+def test_denied_tool_call_never_holds_a_real_gpu():
+    sandbox = _FakeSandbox(gpu_count_requested=1)
+    server = _make_server(policy=agpolicy(default_to_deny=True), sandbox=sandbox)
+    result = server.admit_tool_call("bash", {"cmd": "ls"})
+    assert result["allowed"] is False
+    assert sandbox.acquire_calls == []
+    assert sandbox.holders == set()
+
+
+def test_reserve_and_release_resource_tools_do_not_wait_for_a_real_gpu():
+    sandbox = _FakeSandbox(gpu_count_requested=1)
+    server = _make_server(sandbox=sandbox)
+    for tool_name in ("reserve_resource", "release_resource"):
+        server.admit_tool_call(tool_name, {"gpu": 1})
+    assert sandbox.acquire_calls == []
+    assert sandbox.holders == set()

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class GpuWaitCancelled(RuntimeError):
-    """Raised by acquire_gpus() when its caller's is_cancelled() went true
+    """Raised by acquire_real_gpus() when its caller's is_cancelled() went true
     while still queued -- distinct from TimeoutError so a caller can tell
     "gave up, no GPU ever came" apart from "the request itself died"."""
 
@@ -135,7 +135,7 @@ class agResourcePool:
         """Return a clone of this pool's agconfig."""
         return self.agconfig.clone()
 
-    def acquire_gpus(
+    def acquire_real_gpus(
         self,
         sandbox,
         count: int,
@@ -144,7 +144,7 @@ class agResourcePool:
         poll_interval: float = 0.5,
     ) -> "list[int]":
         """Block until *count* GPUs are free; grant them to *sandbox* (setting
-        its `_gpu_ids`) and return their ids.
+        its `_real_gpu_ids`) and return their ids.
 
         Queued (not just waited-on) so multiple concurrent requests for
         different counts get served smallest-count-first rather than
@@ -195,7 +195,7 @@ class agResourcePool:
                 self._gpu_cond.wait(timeout=slice_s)
         for gpu_id in request.granted_ids:
             agprof.gpu_lease_begin(gpu_id)
-        sandbox._gpu_ids = request.granted_ids
+        sandbox._real_gpu_ids = request.granted_ids
         self._update_resource_log(
             who=sandbox._name, action="acquire_gpu", count=count, gpu_ids=request.granted_ids
         )
@@ -220,7 +220,7 @@ class agResourcePool:
         if granted_any:
             self._gpu_cond.notify_all()
 
-    def release_gpus(self, sandbox, gpu_ids: "list[int]") -> None:
+    def release_real_gpus(self, sandbox, gpu_ids: "list[int]") -> None:
         """Release *gpu_ids* (held by *sandbox*) back to the pool. No "is
         it idle yet" wait: callers already tear down synchronously first.
         Guards against an unknown gpu_id and a double-release."""
@@ -231,7 +231,7 @@ class agResourcePool:
                 if gpu_id not in self.gpus:
                     # DATACOLLECTOR: append -- process-level, real usage-bug signal.
                     print(
-                        f"[agresources] WARNING: release_gpus called with unknown gpu_id={gpu_id}"
+                        f"[agresources] WARNING: release_real_gpus called with unknown gpu_id={gpu_id}"
                     )
                     continue
                 if gpu_id in self._free_gpus:
@@ -243,7 +243,7 @@ class agResourcePool:
             self._dispatch_gpu_queue_locked()
         for gpu_id in gpu_ids:
             agprof.gpu_lease_end(gpu_id)
-        sandbox._gpu_ids = []
+        sandbox._real_gpu_ids = []
         self._update_resource_log(who=sandbox._name, action="release_gpu", gpu_ids=list(gpu_ids))
 
     def acquire_cpu_mem(
@@ -258,7 +258,7 @@ class agResourcePool:
         floor -- silently raised rather than rejected, since a too-small
         request is a caller mistake to correct for, not a real capacity
         constraint (see the total_cpus/total_memory_mb ceiling check, which
-        IS a real rejection, in agskill.py's _reserve_resource).
+        IS a real rejection, in agskill.py's _reserve_virtual_resource).
         """
         if cpus is None and memory_mb is None:
             return

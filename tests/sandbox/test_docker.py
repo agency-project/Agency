@@ -164,7 +164,7 @@ class TestDanglingImageEagerCleanup:
         with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
             with patch.object(_mod._DockerBackend, "_run", fake_run):
                 with patch.object(sb._backend, "_container_status", return_value="running"):
-                    with patch.object(sb._backend, "_gpu_count_requested", 0):
+                    with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                         sb.commit()
 
         rmi_calls = [a for a in run_calls if "rmi" in a]
@@ -197,7 +197,7 @@ class TestDanglingImageEagerCleanup:
         with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
             with patch.object(_mod._DockerBackend, "_run", fake_run):
                 with patch.object(sb._backend, "_container_status", return_value="running"):
-                    with patch.object(sb._backend, "_gpu_count_requested", 0):
+                    with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                         sb.commit()
 
         rmi_calls = [a for a in run_calls if "rmi" in a]
@@ -231,7 +231,7 @@ class TestDanglingImageEagerCleanup:
 
         with patch.object(_mod._DockerBackend, "_run", fake_run):
             with patch.object(sb._backend, "_container_status", return_value="running"):
-                with patch.object(sb._backend, "_gpu_count_requested", 0):
+                with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                     sb.commit()
 
         id_lookups = [c for c in calls if "--format={{.Id}}" in c]
@@ -278,7 +278,7 @@ class TestDanglingImageEagerCleanup:
             with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
                 with patch.object(_mod._DockerBackend, "_run", fake_run):
                     with patch.object(sb._backend, "_container_status", return_value="running"):
-                        with patch.object(sb._backend, "_gpu_count_requested", 0):
+                        with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                             sb.commit()  # must not raise
         finally:
             sys.stderr = old_stderr
@@ -333,7 +333,7 @@ class TestDanglingImageEagerCleanup:
         with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
             with patch.object(_mod._DockerBackend, "_run", fake_run):
                 with patch.object(sb._backend, "_container_status", return_value="running"):
-                    with patch.object(sb._backend, "_gpu_count_requested", 0):
+                    with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                         sb.commit()
 
         assert "rm" not in call_order, (
@@ -584,7 +584,7 @@ class TestCheckpointSquash:
             with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
                 with patch.object(_mod._DockerBackend, "_run", fake_run):
                     with patch.object(sb._backend, "_container_status", return_value="running"):
-                        with patch.object(sb._backend, "_gpu_count_requested", 0):
+                        with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                             sb.commit()
         finally:
             sys.stderr = old_stderr
@@ -616,7 +616,7 @@ class TestCheckpointSquash:
 
         with patch.object(_mod._DockerBackend, "_run", fake_run):
             with patch.object(sb._backend, "_container_status", return_value="running"):
-                with patch.object(sb._backend, "_gpu_count_requested", 0):
+                with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                     sb.commit()
 
         assert any(c[:2] == [sb._backend._runtime, "commit"] for c in calls), (
@@ -646,7 +646,7 @@ class TestCheckpointSquash:
 
         with patch.object(_mod._DockerBackend, "_run", fake_run):
             with patch.object(sb._backend, "_container_status", return_value="running"):
-                with patch.object(sb._backend, "_gpu_count_requested", 0):
+                with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                     sb.commit()
 
         assert any(c[:2] == [sb._backend._runtime, "commit"] for c in calls), (
@@ -671,7 +671,7 @@ class TestCheckpointSquash:
 
         with patch.object(_mod._DockerBackend, "_run", fake_run):
             with patch.object(sb._backend, "_container_status", return_value="running"):
-                with patch.object(sb._backend, "_gpu_count_requested", 0):
+                with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                     sb.commit()  # must not raise
 
         assert not any("export" in c for c in calls), f"must not squash: {calls}"
@@ -707,7 +707,7 @@ class TestCheckpointSquash:
         with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
             with patch.object(_mod._DockerBackend, "_run", fake_run):
                 with patch.object(sb._backend, "_container_status", return_value="running"):
-                    with patch.object(sb._backend, "_gpu_count_requested", 0):
+                    with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                         sb.commit()
 
         assert captured["input"] == fake_tar_bytes
@@ -744,7 +744,7 @@ class TestCheckpointSquash:
         with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
             with patch.object(_mod._DockerBackend, "_run", fake_run):
                 with patch.object(sb._backend, "_container_status", return_value="running"):
-                    with patch.object(sb._backend, "_gpu_count_requested", 0):
+                    with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                         sb.commit()
 
         assert sb._backend._squash_base_diff_ids == ["sha256:flattened-single-layer"]
@@ -780,7 +780,7 @@ class TestCheckpointSquash:
             with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
                 with patch.object(_mod._DockerBackend, "_run", fake_run):
                     with patch.object(sb._backend, "_container_status", return_value="running"):
-                        with patch.object(sb._backend, "_gpu_count_requested", 0):
+                        with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                             sb.commit()  # must not raise
         finally:
             sys.stderr = old_stderr
@@ -822,7 +822,7 @@ class TestCheckpointSquash:
         with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
             with patch.object(_mod._DockerBackend, "_run", fake_run_cycle1):
                 with patch.object(sb._backend, "_container_status", return_value="running"):
-                    with patch.object(sb._backend, "_gpu_count_requested", 0):
+                    with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                         sb.commit()
 
         assert any("export" in c for c in calls), f"cycle 1 must have fallen back: {calls}"
@@ -853,7 +853,7 @@ class TestCheckpointSquash:
                     _mod._DockerBackend, "_locate_layer_diff_dir", return_value=diff_dir
                 ):
                     with patch.object(sb._backend, "_container_status", return_value="running"):
-                        with patch.object(sb._backend, "_gpu_count_requested", 0):
+                        with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                             sb.commit()
 
         assert not any("export" in c or "import" in c for c in calls), (
@@ -887,7 +887,7 @@ class TestCheckpointSquash:
             with patch.object(sb._backend._agconfig.sandbox, "checkpoint_squash_max_depth", 1):
                 with patch.object(_mod._DockerBackend, "_run", fake_run):
                     with patch.object(sb._backend, "_container_status", return_value="running"):
-                        with patch.object(sb._backend, "_gpu_count_requested", 0):
+                        with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                             sb.commit()  # must not raise
         finally:
             sys.stderr = old_stderr
@@ -1589,7 +1589,7 @@ class TestCheckpointAccumulator:
 
         with patch.object(_mod._DockerBackend, "_run", fake_run):
             with patch.object(sb._backend, "_container_status", return_value="running"):
-                with patch.object(sb._backend, "_gpu_count_requested", 0):
+                with patch.object(sb._backend, "_virtual_gpu_count_requested", 0):
                     with patch.object(
                         _mod._DockerBackend,
                         "_build_accumulator_for_squash",
@@ -2188,9 +2188,9 @@ class TestDockerGpuReleaseGating:
 
     def _lease_gpu(self, sb, gpu_id=3):
         released = []
-        sb._gpu_count_requested = 1
-        sb._gpu_ids = [gpu_id]
-        sb._gpu_release_fn = lambda ids: released.extend(ids)
+        sb._virtual_gpu_count_requested = 1
+        sb._real_gpu_ids = [gpu_id]
+        sb._real_gpu_release_fn = lambda ids: released.extend(ids)
         return released
 
     def test_rm_container_releases_gpu_when_already_confirmed_gone(self):
@@ -2206,7 +2206,7 @@ class TestDockerGpuReleaseGating:
                 sb.rm_container()
 
         assert released == [3]
-        assert sb._gpu_ids == []
+        assert sb._real_gpu_ids == []
 
     def test_rm_container_releases_gpu_via_main_teardown_path_after_successful_rm(self):
         """The other release site in rm_container() -- reached via the main
@@ -2239,7 +2239,7 @@ class TestDockerGpuReleaseGating:
                     sb.rm_container()
 
         assert released == [3]
-        assert sb._gpu_ids == []
+        assert sb._real_gpu_ids == []
 
     def test_rm_container_does_not_release_gpu_when_rm_fails_and_container_still_running(self):
         import agency.sandbox.container as _container_mod
@@ -2267,7 +2267,7 @@ class TestDockerGpuReleaseGating:
         assert released == [], (
             "GPU must not be released while the container is confirmed still running"
         )
-        assert sb._gpu_ids == [3], "gpu_id must be left untouched when release didn't happen"
+        assert sb._real_gpu_ids == [3], "gpu_id must be left untouched when release didn't happen"
 
     def test_destroy_releases_gpu_when_container_confirmed_gone_despite_rm_error(self):
         import agency.sandbox.docker as _mod
@@ -2298,7 +2298,7 @@ class TestDockerGpuReleaseGating:
                         sb.destroy()
 
         assert released == [3]
-        assert sb._gpu_ids == []
+        assert sb._real_gpu_ids == []
 
     def test_destroy_does_not_release_gpu_when_container_still_running_after_rm_failure(self):
         import agency.sandbox.docker as _mod
@@ -2322,7 +2322,7 @@ class TestDockerGpuReleaseGating:
                         sb.destroy()
 
         assert released == []
-        assert sb._gpu_ids == [3]
+        assert sb._real_gpu_ids == [3]
 
     def test_gpu_released_exactly_once_across_rm_container_then_destroy(self):
         """rm_container() tears the container down and releases the GPU; a

@@ -258,8 +258,8 @@ def test_message_patch_lookup_reaches_the_real_host_server_and_the_skill_run_set
         llm_usage_tracker=LlmUsageTracker(),
     )
     sandbox = SimpleNamespace(
-        ensure_gpu_acquired=lambda _agname, *, is_cancelled: None,
-        current_gpu_ids=lambda: None,
+        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled, holder=None: None,
+        current_real_gpu_ids=lambda: None,
     )
     context = agcontext()
     patch(

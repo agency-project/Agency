@@ -601,10 +601,13 @@ class _ContainerBackendBase(agsandbox_backend):
         # still reports the real owning process.
         self._owner_pid = os.getpid()
         self._agname = agname
-        self._gpu_ids: list[int] = []
-        self._gpu_count_requested: int = 0
-        self._gpu_acquire_fn = None
-        self._gpu_release_fn = None
+        self._real_gpu_ids: list[int] = []
+        self._virtual_gpu_count_requested: int = 0
+        self._real_gpu_acquire_fn = None
+        self._real_gpu_release_fn = None
+        self._real_gpu_holders: set[str] = set()
+        self._real_gpu_lock = threading.RLock()
+        self._real_gpu_idle_thread: "threading.Thread | None" = None
         self._cpu_acquired: float = 0.0
         self._memory_acquired_mb: int = 0
         self._watched_pids: dict[int, float] = {}
@@ -786,20 +789,8 @@ class _ContainerBackendBase(agsandbox_backend):
             if self._baseline_pids is None:
                 self._baseline_pids = self._snapshot_pids_started()
             return
-        # Acquire the physical GPU(s) (if reserve_resource(gpu=N) was called)
-        # before the container is created, not just in exec() -- this method
-        # can be reached first via read_file()/write_file() rather than
-        # exec(), so exec()'s own lazy acquire (base.py) can't be relied on
-        # to have already run. Guarded by `not self._gpu_ids` the same way
-        # exec()'s does, so whichever entry point gets here first acquires it
-        # exactly once. Note this only affects which physical GPU(s)
-        # CUDA_VISIBLE_DEVICES points at -- _gpu_flags() below attaches every
-        # GPU device to the container unconditionally, so it no longer
-        # matters whether this runs before or after reserve_resource().
-        if self._gpu_count_requested > 0 and not self._agconfig.sandbox.gpu_passthrough:
+        if self._virtual_gpu_count_requested > 0 and not self._agconfig.sandbox.gpu_passthrough:
             raise RuntimeError("GPU reservation is forbidden by this sandbox's CPU-only policy")
-        if self._gpu_count_requested > 0 and not self._gpu_ids and self._gpu_acquire_fn is not None:
-            self._gpu_ids = self._gpu_acquire_fn(self._gpu_count_requested)
         gpu_flags = _gpu_flags(self._runtime) if self._agconfig.sandbox.gpu_passthrough else []
         if (
             storage is not None
@@ -1280,6 +1271,8 @@ class _ContainerBackendBase(agsandbox_backend):
             cmd.append(f"--cpus={cpus}")
         if memory is not None:
             cmd.append(f"--memory={memory}")
+            if self._runtime == "docker":
+                cmd.append(f"--memory-swap={memory}")
         if len(cmd) == 2:
             return  # nothing to update
         cmd.append(self._container_name())
@@ -1578,7 +1571,9 @@ class _ContainerBackendBase(agsandbox_backend):
         into a lifecycle image -- either way, without removing the
         container itself.
         """
-        gpu_ids_to_release = list(self._gpu_ids) if self._gpu_count_requested > 0 else []
+        gpu_ids_to_release = (
+            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
+        )
         if not self._container_running():
             agprof.container_stopped(self._prof_container_label())
             return
@@ -1609,9 +1604,10 @@ class _ContainerBackendBase(agsandbox_backend):
         if not self._container_running():
             agprof.container_stopped(self._prof_container_label())
             self._release_runtime_slot()
-            if gpu_ids_to_release and self._gpu_release_fn is not None:
-                self._gpu_release_fn(gpu_ids_to_release)
-                self._gpu_ids = []
+            if gpu_ids_to_release and self._real_gpu_release_fn is not None:
+                self._real_gpu_release_fn(gpu_ids_to_release)
+                self._real_gpu_ids = []
+                self._real_gpu_holders.clear()
         if stop_exc is not None:
             raise stop_exc
 
@@ -1621,7 +1617,9 @@ class _ContainerBackendBase(agsandbox_backend):
 
         if self._container_running():
             raise CheckpointCapabilityError("CRIU checkpoint left the container running")
-        gpu_ids_to_release = list(self._gpu_ids) if self._gpu_count_requested > 0 else []
+        gpu_ids_to_release = (
+            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
+        )
         self._watched_pids = {}
         self._baseline_pids = None
         self._ptrace_managed_pids = set()
@@ -1629,9 +1627,10 @@ class _ContainerBackendBase(agsandbox_backend):
         self._infrastructure_pids = {}
         agprof.container_stopped(self._prof_container_label())
         self._release_runtime_slot()
-        if gpu_ids_to_release and self._gpu_release_fn is not None:
-            self._gpu_release_fn(gpu_ids_to_release)
-            self._gpu_ids = []
+        if gpu_ids_to_release and self._real_gpu_release_fn is not None:
+            self._real_gpu_release_fn(gpu_ids_to_release)
+            self._real_gpu_ids = []
+            self._real_gpu_holders.clear()
 
     def rm_container(self) -> None:
         """Force-remove the container outright, discarding all of its
@@ -1667,12 +1666,15 @@ class _ContainerBackendBase(agsandbox_backend):
                 self._stop_image()
             checkpointer.hibernated = True
             return
-        gpu_ids_to_release = list(self._gpu_ids) if self._gpu_count_requested > 0 else []
+        gpu_ids_to_release = (
+            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
+        )
         if not self._container_status():
             agprof.container_stopped(self._prof_container_label())
-            if gpu_ids_to_release and self._gpu_release_fn is not None:
-                self._gpu_release_fn(gpu_ids_to_release)
-                self._gpu_ids = []
+            if gpu_ids_to_release and self._real_gpu_release_fn is not None:
+                self._real_gpu_release_fn(gpu_ids_to_release)
+                self._real_gpu_ids = []
+                self._real_gpu_holders.clear()
             return
         # Captured BEFORE the rm attempt: this is what tells us whether the
         # runtime slot is actually ours to release below. Called on an
@@ -1710,11 +1712,12 @@ class _ContainerBackendBase(agsandbox_backend):
             self._release_runtime_slot()
         if (
             gpu_ids_to_release
-            and self._gpu_release_fn is not None
+            and self._real_gpu_release_fn is not None
             and not self._container_running()
         ):
-            self._gpu_release_fn(gpu_ids_to_release)
-            self._gpu_ids = []
+            self._real_gpu_release_fn(gpu_ids_to_release)
+            self._real_gpu_ids = []
+            self._real_gpu_holders.clear()
         # A runtime client can raise even when the daemon completed removal;
         # drop stale attribution whenever removal succeeded or the container
         # is independently confirmed no longer running. Keep it registered if

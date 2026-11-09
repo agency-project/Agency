@@ -623,7 +623,7 @@ class CowZfsCheckpoint:
             )
 
     def _runtime_checkpoint(self, sandbox):
-        if sandbox._gpu_count_requested:
+        if sandbox._virtual_gpu_count_requested:
             raise CheckpointCapabilityError("CRIU fast resume is disabled for GPU sandboxes")
         storage = sandbox._checkpoint_storage
         if sandbox._runtime not in {"docker", "podman"} or not storage.criu_ready:

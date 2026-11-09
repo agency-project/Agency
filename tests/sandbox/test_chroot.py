@@ -669,7 +669,7 @@ class TestChrootGpuDevPaths:
 
 class TestChrootSetupLinesGpuScoping:
     """Integration check that _setup_lines() actually wires
-    _chroot_gpu_dev_paths(self._gpu_ids) into the jail's /dev bind mounts,
+    _chroot_gpu_dev_paths(self._real_gpu_ids) into the jail's /dev bind mounts,
     rather than every host GPU device -- no real chroot required, this only
     inspects the generated shell lines."""
 
@@ -677,7 +677,7 @@ class TestChrootSetupLinesGpuScoping:
         scoped_dev = tmp_path / "nvidia1"
         scoped_dev.touch()
         sb = _make_backend()
-        sb._gpu_ids = [1]
+        sb._real_gpu_ids = [1]
         monkeypatch.setattr(
             _chroot_mod,
             "_chroot_gpu_dev_paths",
@@ -693,7 +693,7 @@ class TestChrootSetupLinesGpuScoping:
         dev3 = tmp_path / "nvidia3"
         dev3.touch()
         sb = _make_backend()
-        sb._gpu_ids = [1, 3]
+        sb._real_gpu_ids = [1, 3]
         monkeypatch.setattr(
             _chroot_mod,
             "_chroot_gpu_dev_paths",
@@ -705,7 +705,7 @@ class TestChrootSetupLinesGpuScoping:
 
     def test_no_gpu_leased_bind_mounts_no_gpu_devices(self, monkeypatch):
         sb = _make_backend()
-        sb._gpu_ids = []
+        sb._real_gpu_ids = []
         monkeypatch.setattr(_chroot_mod, "_chroot_gpu_dev_paths", lambda gpu_ids: [])
         joined = "\n".join(sb._setup_lines())
         assert "nvidia" not in joined
@@ -1161,9 +1161,9 @@ class TestChrootBackendLifecycle:
 class TestChrootGpuReleaseGating:
     def _lease_gpu(self, sb, gpu_ids=(3,)):
         released = []
-        sb._gpu_count_requested = len(gpu_ids)
-        sb._gpu_ids = list(gpu_ids)
-        sb._gpu_release_fn = lambda ids: released.extend(ids)
+        sb._virtual_gpu_count_requested = len(gpu_ids)
+        sb._real_gpu_ids = list(gpu_ids)
+        sb._real_gpu_release_fn = lambda ids: released.extend(ids)
         return released
 
     def test_stop_releases_gpu_after_kill_attempt(self, monkeypatch):
@@ -1174,14 +1174,14 @@ class TestChrootGpuReleaseGating:
         sb.stop()
 
         assert released == [3]
-        assert sb._gpu_ids == []
+        assert sb._real_gpu_ids == []
 
     def test_kill_runs_before_release(self, monkeypatch):
         order = []
         sb = _make_backend()
-        sb._gpu_count_requested = 1
-        sb._gpu_ids = [3]
-        sb._gpu_release_fn = lambda ids: order.append(("release", ids))
+        sb._virtual_gpu_count_requested = 1
+        sb._real_gpu_ids = [3]
+        sb._real_gpu_release_fn = lambda ids: order.append(("release", ids))
         monkeypatch.setattr(sb, "_kill_all_sandbox_processes", lambda: order.append(("kill",)))
 
         sb.stop()
@@ -1218,7 +1218,7 @@ class TestChrootGpuReleaseGating:
         sb.stop()
 
         assert released == [2, 4]
-        assert sb._gpu_ids == []
+        assert sb._real_gpu_ids == []
 
 
 @chroot
