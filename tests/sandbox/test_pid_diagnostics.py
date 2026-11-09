@@ -76,8 +76,8 @@ def test_exec_retains_original_pid_tracking_and_records_registration_identity():
 
     backend = object.__new__(agsandbox_backend)
     backend._agconfig = agconfig(sandboxconfig(hibernation_diagnostics=True))
-    backend._gpu_count_requested = 0
-    backend._gpu_ids = []
+    backend._virtual_gpu_count_requested = 0
+    backend._real_gpu_ids = []
     backend._watched_pids = {}
     stat = "42 (short helper) S 1 " + "0 " * 17 + "1234 0"
     backend._exec_with_pid_tracking = Mock(

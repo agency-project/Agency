@@ -23,7 +23,7 @@ def _backend(runtime="podman"):
     backend._agconfig = cfg
     backend._runtime = runtime
     backend._name = "sandbox"
-    backend._gpu_count_requested = 0
+    backend._virtual_gpu_count_requested = 0
     backend._checkpointer = cp.CowZfsCheckpoint()
     backend._normalized_checkpoint_manifest = Mock(return_value={"schema_version": 1})
     backend._container_running = lambda: state["running"]

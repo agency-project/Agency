@@ -417,7 +417,7 @@ class TestPoolAutoDetect:
 def _resource_sandbox(name="test-sandbox"):
     sb = MagicMock()
     sb._name = name
-    sb._gpu_ids = []
+    sb._real_gpu_ids = []
     sb._cpu_acquired = 0.0
     sb._memory_acquired_mb = 0
     return sb
@@ -427,50 +427,50 @@ class TestAgResourcePool:
     def test_single_gpu_acquire_release(self):
         pool = agResourcePool(gpus=[0])
         sandbox = _resource_sandbox()
-        gids = pool.acquire_gpus(sandbox, 1)
+        gids = pool.acquire_real_gpus(sandbox, 1)
         assert gids == [0]
-        pool.release_gpus(sandbox, gids)
+        pool.release_real_gpus(sandbox, gids)
 
     def test_two_gpus_both_acquired(self):
         pool = agResourcePool(gpus=[0, 1])
         sandbox = _resource_sandbox()
-        g1 = pool.acquire_gpus(sandbox, 1)
-        g2 = pool.acquire_gpus(sandbox, 1)
+        g1 = pool.acquire_real_gpus(sandbox, 1)
+        g2 = pool.acquire_real_gpus(sandbox, 1)
         assert set(g1) | set(g2) == {0, 1}
-        pool.release_gpus(sandbox, g1)
-        pool.release_gpus(sandbox, g2)
+        pool.release_real_gpus(sandbox, g1)
+        pool.release_real_gpus(sandbox, g2)
 
     def test_acquire_blocks_until_released(self):
         pool = agResourcePool(gpus=[0])
         sandbox = _resource_sandbox()
-        pool.acquire_gpus(sandbox, 1)  # hold the only GPU
+        pool.acquire_real_gpus(sandbox, 1)  # hold the only GPU
 
         acquired: list[int] = []
 
         def _waiter():
-            acquired.extend(pool.acquire_gpus(_resource_sandbox(), 1))
+            acquired.extend(pool.acquire_real_gpus(_resource_sandbox(), 1))
 
         t = threading.Thread(target=_waiter)
         t.start()
         time.sleep(0.1)
         assert acquired == []  # still blocked
-        pool.release_gpus(sandbox, [0])
+        pool.release_real_gpus(sandbox, [0])
         t.join(timeout=2)
         assert acquired == [0]
 
     def test_acquire_timeout_raises(self):
         pool = agResourcePool(gpus=[0])
-        pool.acquire_gpus(_resource_sandbox(), 1)  # exhaust pool
+        pool.acquire_real_gpus(_resource_sandbox(), 1)  # exhaust pool
         with pytest.raises(TimeoutError):
-            pool.acquire_gpus(_resource_sandbox(), 1, timeout=0.2)
+            pool.acquire_real_gpus(_resource_sandbox(), 1, timeout=0.2)
 
     def test_release_unowned_gpu_is_safe(self):
         pool = agResourcePool(gpus=[0])
-        pool.release_gpus(_resource_sandbox(), [0])  # never acquired — should not raise
+        pool.release_real_gpus(_resource_sandbox(), [0])  # never acquired — should not raise
 
     def test_release_unknown_gpu_is_safe(self):
         pool = agResourcePool(gpus=[0])
-        pool.release_gpus(_resource_sandbox(), [99])  # not in pool — should not raise
+        pool.release_real_gpus(_resource_sandbox(), [99])  # not in pool — should not raise
 
     def test_repr(self):
         pool = agResourcePool(gpus=[0, 1], idle_cpus=1.0, idle_memory="1g")
@@ -1536,18 +1536,18 @@ class TestAgSandboxExec:
         assert "/tmp/mydir" in out
 
     def test_exec_cuda_env_prefix(self):
-        self.sb._gpu_ids = [3]
+        self.sb._real_gpu_ids = [3]
         out, rc = self.sb.exec("echo $CUDA_VISIBLE_DEVICES")
         assert rc == 0
         assert "3" in out
-        self.sb._gpu_ids = []
+        self.sb._real_gpu_ids = []
 
     def test_exec_cuda_env_prefix_multiple_gpus(self):
-        self.sb._gpu_ids = [3, 5]
+        self.sb._real_gpu_ids = [3, 5]
         out, rc = self.sb.exec("echo $CUDA_VISIBLE_DEVICES")
         assert rc == 0
         assert "3,5" in out
-        self.sb._gpu_ids = []
+        self.sb._real_gpu_ids = []
 
 
 # ---------------------------------------------------------------------------
@@ -2302,16 +2302,16 @@ class TestAgSandboxResourceLimits:
 
     def test_release_resources_clears_gpu(self):
         pool = agResourcePool(gpus=[0])
-        pool.acquire_gpus(self.sb, 1)
-        self.sb._gpu_count_requested = 1
-        self.sb.release_resources(pool)
-        assert self.sb._gpu_ids == []
-        assert self.sb._gpu_count_requested == 0
+        pool.acquire_real_gpus(self.sb, 1)
+        self.sb._virtual_gpu_count_requested = 1
+        self.sb.release_virtual_and_real_resources(pool)
+        assert self.sb._real_gpu_ids == []
+        assert self.sb._virtual_gpu_count_requested == 0
         assert pool._gpus_acquired == 0
 
     def test_release_resources_none_pool(self):
         # Should not raise even without a pool
-        self.sb.release_resources(None)
+        self.sb.release_virtual_and_real_resources(None)
 
 
 @docker
@@ -2339,22 +2339,21 @@ class TestResourceTools:
         self.sb.destroy()
 
     def _reserve_gpu(self, count: int = 1) -> None:
-        """Mirrors agskill._reserve_resource's own body: a virtual-only
+        """Mirrors agskill._reserve_virtual_resource's own body: a virtual-only
         reservation, no physical GPU claimed yet."""
-        self.sb._gpu_count_requested = count
-        self.sb._gpu_acquire_fn = functools.partial(self.pool.acquire_gpus, self.sb)
-        self.sb._gpu_release_fn = functools.partial(self.pool.release_gpus, self.sb)
+        self.sb._virtual_gpu_count_requested = count
+        self.sb._real_gpu_acquire_fn = functools.partial(self.pool.acquire_real_gpus, self.sb)
+        self.sb._real_gpu_release_fn = functools.partial(self.pool.release_real_gpus, self.sb)
 
     # ── physical GPU acquisition on bash exec ──────────────────────────────
 
     def test_exec_acquires_physical_gpu_when_requested(self):
-        """exec() claims a physical GPU from the pool when _gpu_count_requested > 0."""
+        """exec() claims a physical GPU from the pool when _virtual_gpu_count_requested > 0."""
         self._reserve_gpu()
         assert self.pool._gpus_acquired == 0
-        self.sb.exec("echo hello")
-        # Held until stop() (container-exit clear); there is no mid-skill release tool.
-        assert self.pool._gpus_acquired == 1
-        assert self.sb._gpu_ids
+        out, rc = self.sb.exec("echo $CUDA_VISIBLE_DEVICES")
+        assert rc == 0
+        assert out.strip().isdigit()
 
     def test_exec_sets_cuda_visible_devices(self):
         """CUDA_VISIBLE_DEVICES is set to a digit (the physical GPU ID) during exec()."""
@@ -2371,7 +2370,7 @@ class TestResourceTools:
         ids = out.strip().split(",")
         assert len(ids) == 2
         assert all(i.isdigit() for i in ids)
-        assert sorted(int(i) for i in ids) == sorted(self.sb._gpu_ids)
+        assert sorted(int(i) for i in ids) == [0, 1]
 
     def test_exec_without_reserve_hides_all_gpus(self):
         """Without reserving, CUDA_VISIBLE_DEVICES is 'NoDevFiles'."""
@@ -2381,31 +2380,30 @@ class TestResourceTools:
 
     # ── physical GPU release after foreground exec ─────────────────────────
 
-    def test_foreground_exec_holds_physical_gpu_until_stop(self):
-        """Physical GPU stays held after exec(); release waits on container exit (stop)."""
+    def test_foreground_exec_releases_physical_gpu_when_it_ends(self):
+        """The physical GPU returns to the pool when exec() ends; the virtual reservation stays."""
         self._reserve_gpu()
         self.sb.exec("echo hello")
-        assert self.sb._gpu_ids
-        assert self.pool._gpus_acquired == 1
-        assert self.sb._gpu_count_requested > 0
+        assert self.sb._real_gpu_ids == []
+        assert self.pool._gpus_acquired == 0
+        assert self.sb._virtual_gpu_count_requested > 0
 
-    def test_consecutive_foreground_execs_reuse_same_physical_gpu(self):
-        """Each foreground exec() reuses the already-held physical GPU."""
+    def test_consecutive_foreground_execs_each_acquire_and_release_a_physical_gpu(self):
+        """Each foreground exec() leases a GPU for its own duration only."""
         self._reserve_gpu()
-        self.sb.exec("echo first")
-        first = list(self.sb._gpu_ids)
-        assert first
         for _ in range(3):
-            self.sb.exec("echo iteration")
-            assert self.sb._gpu_ids == first
-            assert self.pool._gpus_acquired == 1
+            out, rc = self.sb.exec("echo $CUDA_VISIBLE_DEVICES")
+            assert rc == 0
+            assert out.strip().isdigit()
+            assert self.sb._real_gpu_ids == []
+            assert self.pool._gpus_acquired == 0
 
-    def test_virtual_reservation_and_physical_gpu_persist_across_execs(self):
-        """_gpu_count_requested and the leased GPU stay set across successive exec() calls."""
+    def test_virtual_reservation_persists_across_execs_while_physical_gpu_does_not(self):
+        """_virtual_gpu_count_requested stays set across exec() calls; the leased GPU does not."""
         self._reserve_gpu()
         self.sb.exec("echo first")
-        assert self.sb._gpu_count_requested > 0
-        assert self.sb._gpu_ids
+        assert self.sb._virtual_gpu_count_requested > 0
+        assert self.sb._real_gpu_ids == []
         out, rc = self.sb.exec("echo $CUDA_VISIBLE_DEVICES")
         assert rc == 0
         assert out.strip().isdigit()
@@ -2423,7 +2421,7 @@ class TestResourceTools:
         self.sb.exec("sleep 30 &")
         live = self.sb.get_live_pids()
         assert len(live) > 0
-        assert self.sb._gpu_ids
+        assert self.sb._real_gpu_ids
         assert self.pool._gpus_acquired == 1
         self.sb.exec("kill %1 2>/dev/null || true")
 
@@ -2432,21 +2430,24 @@ class TestResourceTools:
         self._reserve_gpu()
         self.sb.exec("sleep 30 &")  # ceiling, not a real wait -- see comment above
         self.sb.get_live_pids()
-        first_gpu_ids = list(self.sb._gpu_ids)
+        first_gpu_ids = list(self.sb._real_gpu_ids)
         assert first_gpu_ids
         self.sb.exec("echo checking")
-        assert self.sb._gpu_ids == first_gpu_ids  # same physical GPU, not re-acquired
+        assert self.sb._real_gpu_ids == first_gpu_ids  # same physical GPU, not re-acquired
         self.sb.exec("kill %1 2>/dev/null || true")
 
-    def test_physical_gpu_held_after_background_process_finishes(self):
-        """Physical GPU stays held after background work exits; stop() frees it."""
+    def test_physical_gpu_released_after_background_process_finishes(self):
+        """Physical GPU returns to the pool once the background work exits."""
+        self.sb.exec("true")
         self._reserve_gpu()
-        self.sb.exec("sleep 0.1 &")
-        time.sleep(1.0)
-        self.sb.get_live_pids()
-        assert self.sb._gpu_ids
-        assert self.pool._gpus_acquired == 1
-        assert self.sb._gpu_count_requested > 0
+        self.sb.exec("sleep 8 &")
+        assert self.sb._real_gpu_ids
+        deadline = time.monotonic() + 60
+        while self.sb._real_gpu_ids and time.monotonic() < deadline:
+            time.sleep(0.5)
+        assert self.sb._real_gpu_ids == []
+        assert self.pool._gpus_acquired == 0
+        assert self.sb._virtual_gpu_count_requested > 0
 
     # ── waiting for physical GPU when pool is exhausted ────────────────────
 
@@ -2454,12 +2455,12 @@ class TestResourceTools:
         """exec() waits indefinitely for a physical GPU and unblocks once one is released."""
         pool1 = agResourcePool(gpus=[0])
         holder = _resource_sandbox()
-        pool1.acquire_gpus(holder, 1)  # exhaust the only GPU
+        pool1.acquire_real_gpus(holder, 1)  # exhaust the only GPU
 
         sb2 = _make_sandbox()
-        sb2._gpu_count_requested = 1
-        sb2._gpu_acquire_fn = functools.partial(pool1.acquire_gpus, sb2)
-        sb2._gpu_release_fn = functools.partial(pool1.release_gpus, sb2)
+        sb2._virtual_gpu_count_requested = 1
+        sb2._real_gpu_acquire_fn = functools.partial(pool1.acquire_real_gpus, sb2)
+        sb2._real_gpu_release_fn = functools.partial(pool1.release_real_gpus, sb2)
 
         exec_started = threading.Event()
         exec_done = threading.Event()
@@ -2474,30 +2475,30 @@ class TestResourceTools:
         exec_started.wait()
         time.sleep(0.2)
         assert not exec_done.is_set()  # still waiting
-        pool1.release_gpus(holder, [0])  # free the GPU
+        pool1.release_real_gpus(holder, [0])  # free the GPU
         exec_done.wait(timeout=60)  # container startup (docker run) can take >5 s
         assert exec_done.is_set()
         sb2.destroy()
 
-    # ── release_resources ─────────────────────────────────────────────────
+    # ── release_virtual_and_real_resources ─────────────────────────────────────────────────
 
     def test_release_resources_clears_both_virtual_flag_and_physical_gpu(self):
-        """release_resources() clears _gpu_count_requested and returns any held physical GPU."""
+        """release_virtual_and_real_resources() clears _virtual_gpu_count_requested and returns any held physical GPU."""
         self._reserve_gpu()
         self.sb.exec("sleep 30 &")
         self.sb.get_live_pids()
-        assert self.sb._gpu_ids
-        self.sb.release_resources(self.pool)
-        assert self.sb._gpu_count_requested == 0
-        assert self.sb._gpu_ids == []
+        assert self.sb._real_gpu_ids
+        self.sb.release_virtual_and_real_resources(self.pool)
+        assert self.sb._virtual_gpu_count_requested == 0
+        assert self.sb._real_gpu_ids == []
         assert self.pool._gpus_acquired == 0
         self.sb.exec("kill %1 2>/dev/null || true")
 
     def test_release_resources_without_reserve_does_not_raise(self):
-        """release_resources() is safe when no GPU was ever reserved."""
-        self.sb.release_resources(self.pool)
-        assert self.sb._gpu_count_requested == 0
-        assert self.sb._gpu_ids == []
+        """release_virtual_and_real_resources() is safe when no GPU was ever reserved."""
+        self.sb.release_virtual_and_real_resources(self.pool)
+        assert self.sb._virtual_gpu_count_requested == 0
+        assert self.sb._real_gpu_ids == []
 
     # ── reserve_cpu / cpu_release ─────────────────────────────────────────
 

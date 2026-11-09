@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _reserve_resource(arg: agdata, sandbox, resource_pool) -> agdata:
+def _reserve_virtual_resource(arg: agdata, sandbox, resource_pool) -> agdata:
     cpus = arg._data.get("cpus")
     memory_mb = arg._data.get("memory_mb")
     gpu = arg._data.get("gpu", 0)
@@ -39,9 +39,9 @@ def _reserve_resource(arg: agdata, sandbox, resource_pool) -> agdata:
         messages.append(f"cpus={cpus}, memory_mb={memory_mb}")
 
     if gpu:
-        sandbox._gpu_count_requested = gpu
-        sandbox._gpu_acquire_fn = functools.partial(resource_pool.acquire_gpus, sandbox)
-        sandbox._gpu_release_fn = functools.partial(resource_pool.release_gpus, sandbox)
+        sandbox._virtual_gpu_count_requested = gpu
+        sandbox._real_gpu_acquire_fn = functools.partial(resource_pool.acquire_real_gpus, sandbox)
+        sandbox._real_gpu_release_fn = functools.partial(resource_pool.release_real_gpus, sandbox)
         result["gpu_count_requested"] = gpu
         messages.append(f"gpu reservation set to {gpu} (granted lazily on next exec)")
 
@@ -51,7 +51,7 @@ def _reserve_resource(arg: agdata, sandbox, resource_pool) -> agdata:
     return agdata(**result)
 
 
-def _release_resource(arg: agdata, sandbox, resource_pool) -> agdata:
+def _release_virtual_and_real_resource(arg: agdata, sandbox, resource_pool) -> agdata:
     cpu = arg._data.get("cpu", False)
     memory = arg._data.get("memory", False)
     gpu = arg._data.get("gpu", False)
@@ -62,13 +62,13 @@ def _release_resource(arg: agdata, sandbox, resource_pool) -> agdata:
         messages.append(f"cpu={cpu}, memory={memory} reset to idle")
 
     if gpu:
-        if sandbox._gpu_count_requested > 0:
-            if sandbox._gpu_ids:
-                resource_pool.release_gpus(sandbox, sandbox._gpu_ids)
-            messages.append(f"gpu reservation ({sandbox._gpu_count_requested}) released")
-            sandbox._gpu_count_requested = 0
-            sandbox._gpu_acquire_fn = None
-            sandbox._gpu_release_fn = None
+        if sandbox._virtual_gpu_count_requested > 0:
+            if sandbox._real_gpu_ids:
+                resource_pool.release_real_gpus(sandbox, sandbox._real_gpu_ids)
+            messages.append(f"gpu reservation ({sandbox._virtual_gpu_count_requested}) released")
+            sandbox._virtual_gpu_count_requested = 0
+            sandbox._real_gpu_acquire_fn = None
+            sandbox._real_gpu_release_fn = None
         else:
             messages.append("no gpu was reserved")
 
@@ -81,8 +81,8 @@ def _get_current_resources(arg: agdata, sandbox, resource_pool) -> agdata:
     return agdata(
         cpus_acquired=sandbox._cpu_acquired,
         memory_mb_acquired=sandbox._memory_acquired_mb,
-        gpu_count_requested=sandbox._gpu_count_requested,
-        gpu_ids_held=list(sandbox._gpu_ids),
+        gpu_count_requested=sandbox._virtual_gpu_count_requested,
+        gpu_ids_held=list(sandbox._real_gpu_ids),
         total_cpus=resource_pool.total_cpus,
         total_memory_mb=resource_pool.total_memory_mb,
         total_gpus=len(resource_pool.gpus),
@@ -159,7 +159,7 @@ _DEFAULT_HOST_MCP_TOOLS: "list[agtool]" = [
             "Any combination of cpus/memory_mb/gpu may be given in one call; "
             "omitted resources are left untouched."
         ),
-        fn=_reserve_resource,
+        fn=_reserve_virtual_resource,
         params={
             "type": "object",
             "properties": {
@@ -177,7 +177,7 @@ _DEFAULT_HOST_MCP_TOOLS: "list[agtool]" = [
             "sandbox. Any combination of cpu/memory/gpu may be given in one "
             "call; omitted resources are left untouched."
         ),
-        fn=_release_resource,
+        fn=_release_virtual_and_real_resource,
         params={
             "type": "object",
             "properties": {

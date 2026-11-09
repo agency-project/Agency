@@ -10,7 +10,7 @@ Every backend exposes the same surface `agSandbox` uses: `exec()`,
 `_container_exec()`, `read_file()`/`write_file()` (+ `_bytes` variants),
 `commit()`/`stop()`/`restore()`/`destroy()`, `update_limits()`,
 `remove_files()`, `get_live_pids()`/`pid_status_summary()`/`release_daemon()`,
-`release_resources()`, `fork()`, and the static image-level helpers
+`release_virtual_and_real_resources()`, `fork()`, and the static image-level helpers
 `tag_image()`/`export_image()`/`import_image()`/`delete_image()`.
 
 The concrete backends themselves live in sibling modules -- `.container`
@@ -26,7 +26,9 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import threading
 import time
+import uuid
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as _FutureTimeoutError
 from typing import TYPE_CHECKING, Callable, ClassVar
@@ -37,6 +39,8 @@ from ..configs.agconfig import agconfig as agconfig_cls
 
 if TYPE_CHECKING:
     from ..orchestrator.agresources import agResourcePool
+
+_REAL_GPU_IDLE_POLL_INTERVAL_S = 1.0
 
 
 class AgSandboxBackendFields:
@@ -355,11 +359,66 @@ class agsandbox_backend(AgSandboxBackendFields):
         """Run a user command inside the container."""
         # Lazily acquire the requested physical GPU(s) now that we have a
         # bash call to run. Blocks until enough GPUs in the pool are free.
-        if self._gpu_count_requested > 0 and not self._agconfig.sandbox.gpu_passthrough:
+        if self._virtual_gpu_count_requested > 0 and not self._agconfig.sandbox.gpu_passthrough:
             raise RuntimeError("GPU reservation is forbidden by this sandbox's CPU-only policy")
-        if self._gpu_count_requested > 0 and not self._gpu_ids and self._gpu_acquire_fn is not None:
-            self._gpu_ids = self._gpu_acquire_fn(self._gpu_count_requested)
+        holder = self._hold_real_gpus()
+        try:
+            return self._exec_with_real_gpus(cmd, workdir, timeout)
+        finally:
+            if holder is not None:
+                self.release_real_gpu_when_idle(holder)
 
+    def _hold_real_gpus(self) -> "str | None":
+        if self._virtual_gpu_count_requested <= 0 or self._real_gpu_acquire_fn is None:
+            return None
+        holder = uuid.uuid4().hex
+        with self._real_gpu_lock:
+            if not self._real_gpu_ids:
+                self._real_gpu_ids = self._real_gpu_acquire_fn(self._virtual_gpu_count_requested)
+            self._real_gpu_holders.add(holder)
+        return holder
+
+    def release_real_gpu_when_idle(self, holder: "str | None" = None) -> None:
+        with self._real_gpu_lock:
+            self._real_gpu_holders.discard(holder)
+            if self._real_gpu_holders or not self._real_gpu_ids:
+                return
+            if self.get_live_pids():
+                self._start_real_gpu_idle_thread()
+                return
+            self._release_real_gpus_now()
+
+    def _release_real_gpus_now(self) -> None:
+        gpu_ids = list(self._real_gpu_ids)
+        if gpu_ids and self._real_gpu_release_fn is not None:
+            self._real_gpu_release_fn(gpu_ids)
+            self._real_gpu_ids = []
+
+    def _start_real_gpu_idle_thread(self) -> None:
+        if self._real_gpu_idle_thread is not None:
+            return
+        self._real_gpu_idle_thread = threading.Thread(
+            target=self._release_real_gpus_when_background_exits,
+            name=f"real-gpu-idle-{self._name}",
+            daemon=True,
+        )
+        self._real_gpu_idle_thread.start()
+
+    def _release_real_gpus_when_background_exits(self) -> None:
+        try:
+            while not self._destroyed:
+                time.sleep(_REAL_GPU_IDLE_POLL_INTERVAL_S)
+                with self._real_gpu_lock:
+                    if self._real_gpu_holders or not self._real_gpu_ids:
+                        return
+                    if not self.get_live_pids():
+                        self._release_real_gpus_now()
+                        return
+        finally:
+            with self._real_gpu_lock:
+                self._real_gpu_idle_thread = None
+
+    def _exec_with_real_gpus(self, cmd: str, workdir: str, timeout: int) -> tuple[str, int]:
         # Restrict GPU access to the acquired GPU ID(s). Set both CUDA_VISIBLE_DEVICES
         # (NVIDIA/CUDA) and HIP_VISIBLE_DEVICES (AMD/ROCm) so only the leased
         # device(s) are accessible regardless of which runtime is present.
@@ -367,7 +426,9 @@ class agsandbox_backend(AgSandboxBackendFields):
         # An empty string would leave CUDA_VISIBLE_DEVICES unset, making all GPUs visible.
         import os
 
-        gpu_id = ",".join(str(g) for g in self._gpu_ids) if self._gpu_ids else "NoDevFiles"
+        gpu_id = (
+            ",".join(str(g) for g in self._real_gpu_ids) if self._real_gpu_ids else "NoDevFiles"
+        )
         hf_token = os.environ.get("HF_TOKEN", "")
         hf_export = f"export HF_TOKEN={hf_token}\n" if hf_token else ""
         # readonly (not just export) so a command that itself starts with
@@ -404,17 +465,6 @@ class agsandbox_backend(AgSandboxBackendFields):
                         pass
         else:
             clean_output = output
-
-        # Re-verify liveness when _watched_pids is non-empty — get_live_pids()
-        # prunes dead entries. GPU release itself is deferred until stop(),
-        # which runs after teardown (kill processes, then remove the
-        # container / rmtree the chroot jail) has already completed
-        # synchronously -- not tied to an empty watched set here while the
-        # idle entrypoint still runs. There is no agent-facing release tool;
-        # the real GPU semaphore's lifetime is tied to the sandbox's own
-        # lifetime.
-        if self._watched_pids and self._gpu_count_requested > 0 and self._gpu_ids:
-            self.get_live_pids()
 
         return clean_output, rc
 
@@ -727,13 +777,14 @@ class agsandbox_backend(AgSandboxBackendFields):
             parts.append(f"PID {pid} (running {mins}m {secs}s)")
         return ", ".join(parts)
 
-    def release_resources(self, pool: "agResourcePool | None" = None) -> None:
-        self._gpu_count_requested = 0
-        if self._gpu_ids:
+    def release_virtual_and_real_resources(self, pool: "agResourcePool | None" = None) -> None:
+        self._virtual_gpu_count_requested = 0
+        self._real_gpu_holders.clear()
+        if self._real_gpu_ids:
             if pool is not None:
-                pool.release_gpus(self, self._gpu_ids)
-            elif self._gpu_release_fn is not None:
-                self._gpu_release_fn(self._gpu_ids)
+                pool.release_real_gpus(self, self._real_gpu_ids)
+            elif self._real_gpu_release_fn is not None:
+                self._real_gpu_release_fn(self._real_gpu_ids)
         if pool is not None:
             try:
                 pool.release_cpu_mem(self, cpu=True, memory=True)

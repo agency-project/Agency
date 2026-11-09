@@ -1214,7 +1214,7 @@ class TestGpuFlagsPerRuntime:
 
 class TestEnsureStartedAttachesGpuRegardlessOfReserveOrder:
     """Regression coverage for the bug this fixes: _gpu_flags() used to be
-    gated on `self._gpu_count_requested` (whether reserve_resource(gpu=N)
+    gated on `self._virtual_gpu_count_requested` (whether reserve_resource(gpu=N)
     had been called *before* the container was created), so a container
     created via a first bash/read_file/write_file call before
     reserve_resource() ran was permanently stuck without GPU device access
@@ -1222,7 +1222,7 @@ class TestEnsureStartedAttachesGpuRegardlessOfReserveOrder:
     neither docker nor podman can hot-attach a device to an already-running
     container. `_gpu_flags()` is now called unconditionally, so the
     `docker/podman run` invocation must include GPU flags even when
-    `_gpu_count_requested` is still 0 at the moment the container is
+    `_virtual_gpu_count_requested` is still 0 at the moment the container is
     actually created."""
 
     def _sb(self):
@@ -1239,7 +1239,7 @@ class TestEnsureStartedAttachesGpuRegardlessOfReserveOrder:
 
     def test_run_cmd_includes_gpu_flags_when_container_created_before_reserve_gpu(self):
         sb = self._sb()
-        assert sb._gpu_count_requested == 0  # reserve_resource() has NOT been called yet
+        assert sb._virtual_gpu_count_requested == 0  # reserve_resource() has NOT been called yet
 
         with patch.object(_container, "_gpu_flags", return_value=["--device", "sentinel"]) as gf:
             with patch.object(sb, "_inspect_container_state", return_value=(False, "")):
@@ -1305,7 +1305,7 @@ class TestEnsureStartedAttachesGpuRegardlessOfReserveOrder:
             mounts={},
             agconfig=cfg,
         )
-        sb._gpu_count_requested = 1
+        sb._virtual_gpu_count_requested = 1
         with patch.object(sb, "_inspect_container_state", return_value=(False, "")):
             with pytest.raises(RuntimeError, match="CPU-only policy"):
                 sb._ensure_started()
@@ -1831,11 +1831,11 @@ class TestCvdOverrideProtectionIntegration:
         pool = agResourcePool(mark_gpus=False)
         assert pool.gpus, "expected at least one real GPU to be detected on this host"
         try:
-            # Mirrors agskill._reserve_resource's own body: a virtual-only
+            # Mirrors agskill._reserve_virtual_resource's own body: a virtual-only
             # reservation, no physical GPU claimed until exec().
-            sb._gpu_count_requested = 1
-            sb._gpu_acquire_fn = functools.partial(pool.acquire_gpus, sb)
-            sb._gpu_release_fn = functools.partial(pool.release_gpus, sb)
+            sb._virtual_gpu_count_requested = 1
+            sb._real_gpu_acquire_fn = functools.partial(pool.acquire_real_gpus, sb)
+            sb._real_gpu_release_fn = functools.partial(pool.release_real_gpus, sb)
 
             leased_out, rc = sb.exec("echo $CUDA_VISIBLE_DEVICES")
             assert rc == 0

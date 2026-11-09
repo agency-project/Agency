@@ -158,7 +158,7 @@ class HostServicesClient:
     ) -> dict:
         # A GPU-gated tool call can legitimately block on the host for as
         # long as another agent holds the GPU it reserved -- unbounded by
-        # design (see agResourcePool.acquire_gpus), so this one call, unlike
+        # design (see agResourcePool.acquire_real_gpus), so this one call, unlike
         # the rest of this client's (should-be-fast) calls, must not race a
         # generic client timeout. Same reasoning as engine.py's
         # `handle.client(timeout_s=None)` for run_harness_attempt.

@@ -173,60 +173,70 @@ class agSandbox:
     # the backend's own exec() reads/writes these live (to gate GPU env-var
     # injection and release), so they're properties over the backend's state
     # rather than independent facade state. tools/resource.py sets these
-    # directly on the sandbox instance (e.g. ``sandbox._gpu_count_requested = 1``).
+    # directly on the sandbox instance (e.g. ``sandbox._virtual_gpu_count_requested = 1``).
     # ------------------------------------------------------------------
 
     @property
-    def _gpu_ids(self) -> "list[int]":
-        return self._backend._gpu_ids
+    def _real_gpu_ids(self) -> "list[int]":
+        return self._backend._real_gpu_ids
 
-    @_gpu_ids.setter
-    def _gpu_ids(self, value: "list[int]") -> None:
-        self._backend._gpu_ids = value
+    @_real_gpu_ids.setter
+    def _real_gpu_ids(self, value: "list[int]") -> None:
+        self._backend._real_gpu_ids = value
 
     @property
-    def _gpu_count_requested(self) -> int:
-        return self._backend._gpu_count_requested
+    def _virtual_gpu_count_requested(self) -> int:
+        return self._backend._virtual_gpu_count_requested
 
-    @_gpu_count_requested.setter
-    def _gpu_count_requested(self, value: int) -> None:
+    @_virtual_gpu_count_requested.setter
+    def _virtual_gpu_count_requested(self, value: int) -> None:
         if value > 0 and not self.agconfig.sandbox.gpu_passthrough:
             raise RuntimeError("GPU reservation is forbidden by this sandbox's CPU-only policy")
-        self._backend._gpu_count_requested = value
+        self._backend._virtual_gpu_count_requested = value
 
     @property
-    def _gpu_acquire_fn(self):
-        return self._backend._gpu_acquire_fn
+    def _real_gpu_acquire_fn(self):
+        return self._backend._real_gpu_acquire_fn
 
-    @_gpu_acquire_fn.setter
-    def _gpu_acquire_fn(self, value) -> None:
-        self._backend._gpu_acquire_fn = value
+    @_real_gpu_acquire_fn.setter
+    def _real_gpu_acquire_fn(self, value) -> None:
+        self._backend._real_gpu_acquire_fn = value
 
     @property
-    def _gpu_release_fn(self):
-        return self._backend._gpu_release_fn
+    def _real_gpu_release_fn(self):
+        return self._backend._real_gpu_release_fn
 
-    @_gpu_release_fn.setter
-    def _gpu_release_fn(self, value) -> None:
-        self._backend._gpu_release_fn = value
+    @_real_gpu_release_fn.setter
+    def _real_gpu_release_fn(self, value) -> None:
+        self._backend._real_gpu_release_fn = value
 
-    def current_gpu_ids(self) -> "list[int] | None":
-        """Currently-held GPU ids, or None if nothing was ever reserved."""
-        if self._gpu_count_requested <= 0:
-            return None
-        return list(self._gpu_ids)
+    def current_real_gpu_ids(self) -> "list[int] | None":
+        if self._virtual_gpu_count_requested <= 0:
+            return [] if self.agconfig.sandbox.gpu_passthrough else None
+        return list(self._real_gpu_ids)
 
-    def ensure_gpu_acquired(
-        self, agname: str, *, is_cancelled: "Callable[[], bool] | None" = None
+    def ensure_real_gpu_acquired(
+        self,
+        agname: str,
+        *,
+        is_cancelled: "Callable[[], bool] | None" = None,
+        holder: "str | None" = None,
     ) -> None:
-        """Physically acquire the reserved GPU(s), if not already held.
-        Pauses agname's harness for the duration (best-effort)."""
-        if self._gpu_count_requested <= 0 or self._gpu_ids or self._gpu_acquire_fn is None:
+        if self._virtual_gpu_count_requested <= 0 or self._real_gpu_acquire_fn is None:
             return
-        count = self._gpu_count_requested
+        with self._backend._real_gpu_lock:
+            if not self._real_gpu_ids:
+                self._acquire_real_gpus_with_harness_paused(agname, is_cancelled)
+            if holder is not None:
+                self._backend._real_gpu_holders.add(holder)
+
+    def _acquire_real_gpus_with_harness_paused(
+        self, agname: str, is_cancelled: "Callable[[], bool] | None"
+    ) -> None:
+        count = self._virtual_gpu_count_requested
         client = self._harness_daemon_client(agname)
         if client is None:
-            self._gpu_ids = self._gpu_acquire_fn(count, is_cancelled=is_cancelled)
+            self._real_gpu_ids = self._real_gpu_acquire_fn(count, is_cancelled=is_cancelled)
             return
         with client:
             try:
@@ -234,12 +244,15 @@ class agSandbox:
             except Exception as exc:
                 print(f"[agsandbox] WARNING: pause_harness() failed for {agname}: {exc}")
             try:
-                self._gpu_ids = self._gpu_acquire_fn(count, is_cancelled=is_cancelled)
+                self._real_gpu_ids = self._real_gpu_acquire_fn(count, is_cancelled=is_cancelled)
             finally:
                 try:
                     client.resume_harness()
                 except Exception as exc:
                     print(f"[agsandbox] WARNING: resume_harness() failed for {agname}: {exc}")
+
+    def release_real_gpu_when_idle(self, holder: "str | None" = None) -> None:
+        self._backend.release_real_gpu_when_idle(holder)
 
     def _harness_daemon_client(self, agname: str) -> "HarnessInteractionClient | None":
         handles = getattr(self, "_agency_harness_daemon_handles", None)
@@ -396,8 +409,8 @@ class agSandbox:
     def pid_status_summary(self) -> str:
         return self._backend.pid_status_summary()
 
-    def release_resources(self, pool: "agResourcePool | None" = None) -> None:
-        self._backend.release_resources(pool)
+    def release_virtual_and_real_resources(self, pool: "agResourcePool | None" = None) -> None:
+        self._backend.release_virtual_and_real_resources(pool)
 
     def remove_files(self, paths: list[str]) -> None:
         self._backend.remove_files(paths)

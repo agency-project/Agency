@@ -397,10 +397,13 @@ class _ChrootBackend(agsandbox_backend):
         agconfig: "agconfig_cls | None",
     ) -> None:
         self._agname = agname
-        self._gpu_ids: list[int] = []
-        self._gpu_count_requested: int = 0
-        self._gpu_acquire_fn = None
-        self._gpu_release_fn = None
+        self._real_gpu_ids: list[int] = []
+        self._virtual_gpu_count_requested: int = 0
+        self._real_gpu_acquire_fn = None
+        self._real_gpu_release_fn = None
+        self._real_gpu_holders: set[str] = set()
+        self._real_gpu_lock = threading.RLock()
+        self._real_gpu_idle_thread: "threading.Thread | None" = None
         self._cpu_acquired: float = 0.0
         self._memory_acquired_mb: int = 0
         # Never populated -- chroot tracks background work purely via
@@ -652,7 +655,7 @@ class _ChrootBackend(agsandbox_backend):
         )
         lines.append(f"ln -sfn pts/ptmx {shlex.quote(dev_jail_path + '/ptmx')}")
         dev_host_paths = [f"/dev/{name}" for name in _CHROOT_DEV_FILES] + _chroot_gpu_dev_paths(
-            self._gpu_ids
+            self._real_gpu_ids
         )
         for host_dev in dev_host_paths:
             if not os.path.exists(host_dev):
@@ -892,12 +895,15 @@ class _ChrootBackend(agsandbox_backend):
         involved). Leaves `self._workspace` untouched, so a later
         `_ensure_started()` resumes from it; use `rm_container()` to
         discard state instead."""
-        gpu_ids_to_release = list(self._gpu_ids) if self._gpu_count_requested > 0 else []
+        gpu_ids_to_release = (
+            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
+        )
         # Kill first: this IS the confirmation the sandbox has exited.
         self._kill_all_sandbox_processes()
-        if gpu_ids_to_release and self._gpu_release_fn is not None:
-            self._gpu_release_fn(gpu_ids_to_release)
-            self._gpu_ids = []
+        if gpu_ids_to_release and self._real_gpu_release_fn is not None:
+            self._real_gpu_release_fn(gpu_ids_to_release)
+            self._real_gpu_ids = []
+            self._real_gpu_holders.clear()
         self._watched_pids = {}
         self._invocation_pgids = set()
 
@@ -912,11 +918,14 @@ class _ChrootBackend(agsandbox_backend):
         primitive -- call it without a preceding commit() to throw away
         everything since the last checkpoint.
         """
-        gpu_ids_to_release = list(self._gpu_ids) if self._gpu_count_requested > 0 else []
+        gpu_ids_to_release = (
+            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
+        )
         self._kill_all_sandbox_processes()
-        if gpu_ids_to_release and self._gpu_release_fn is not None:
-            self._gpu_release_fn(gpu_ids_to_release)
-            self._gpu_ids = []
+        if gpu_ids_to_release and self._real_gpu_release_fn is not None:
+            self._real_gpu_release_fn(gpu_ids_to_release)
+            self._real_gpu_ids = []
+            self._real_gpu_holders.clear()
         self._watched_pids = {}
         self._invocation_pgids = set()
         if self._workspace.exists():
