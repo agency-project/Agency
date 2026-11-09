@@ -397,11 +397,12 @@ class agsandbox_backend(AgSandboxBackendFields):
     def _start_real_gpu_idle_thread(self) -> None:
         if self._real_gpu_idle_thread is not None:
             return
-        self._real_gpu_idle_thread = threading.Thread(
-            target=self._release_real_gpus_when_background_exits,
-            name=f"real-gpu-idle-{self._name}",
-            daemon=True,
+        from ..observability.profiler import agprof
+
+        self._real_gpu_idle_thread = agprof.spawn_traced(
+            self._release_real_gpus_when_background_exits, daemon=True
         )
+        self._real_gpu_idle_thread.name = f"real-gpu-idle-{self._name}"
         self._real_gpu_idle_thread.start()
 
     def _release_real_gpus_when_background_exits(self) -> None:

@@ -42,7 +42,7 @@ def _make_manager(tmp_path, policy=None, is_cancelled=None, harness="claude_code
         llm_usage_tracker=LlmUsageTracker(),
     )
     sandbox = SimpleNamespace(
-        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled: None,
+        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled, holder=None: None,
         current_real_gpu_ids=lambda: None,
     )
     skill = SimpleNamespace(
@@ -411,7 +411,7 @@ def test_start_serves_the_mounted_mcp_server_without_a_lifespan_error():
         llm_usage_tracker=LlmUsageTracker(),
     )
     sandbox = SimpleNamespace(
-        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled: None,
+        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled, holder=None: None,
         current_real_gpu_ids=lambda: None,
     )
     skill = agskill(name="s", prompt="p", policy=agpolicy())
