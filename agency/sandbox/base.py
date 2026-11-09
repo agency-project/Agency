@@ -26,7 +26,6 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
-import threading
 import time
 import uuid
 from concurrent.futures import Future
