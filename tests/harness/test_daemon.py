@@ -4,6 +4,7 @@ import base64
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +73,7 @@ class _FakePingClient:
         if self._raise_on_post:
             raise ConnectionError("daemon-side socket already gone")
         self._posted.append((path, json))
+        return SimpleNamespace(status_code=200)
 
     def __enter__(self):
         return self
@@ -87,7 +89,7 @@ def test_ping_daemon_lifecycle_posts_a_started_event(monkeypatch):
 
     assert len(posted) == 1
     path, body = posted[0]
-    assert path == "/record_event"
+    assert path == "/interaction/daemon_ping"
     assert body["type"] == "harness_daemon_started"
     assert body["payload"]["engine"] == "agent-1"
     assert "reason" not in body["payload"]

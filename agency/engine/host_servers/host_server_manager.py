@@ -28,6 +28,10 @@ if TYPE_CHECKING:
     from ...sandbox.agsandbox import agSandbox
 
 
+# Pinged by the daemon and its bootstrap before any attempt token exists.
+_DAEMON_PING_PATH = "/interaction/daemon_ping"
+
+
 class _AttemptFenceMiddleware:
     """Hold an attempt lease through the complete mounted ASGI response.
 
@@ -42,6 +46,10 @@ class _AttemptFenceMiddleware:
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        if scope["path"] == _DAEMON_PING_PATH:
             await self._app(scope, receive, send)
             return
 

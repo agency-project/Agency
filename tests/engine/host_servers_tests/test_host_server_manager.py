@@ -330,6 +330,7 @@ def test_clear_waits_for_a_streaming_response_to_release_its_lease(tmp_path):
     middleware = _AttemptFenceMiddleware(streaming_app, manager=manager)
     scope = {
         "type": "http",
+        "path": "/interaction/check_tool",
         "headers": [(ATTEMPT_TOKEN_HEADER.lower().encode(), b"current")],
     }
 
@@ -492,3 +493,51 @@ def test_start_serves_the_mounted_mcp_server_without_a_lifespan_error():
         manager.stop()
         Path(uds_path).unlink(missing_ok=True)
         Path(db_path).unlink(missing_ok=True)
+
+
+def test_daemon_pings_reach_the_interaction_server_without_an_attempt_token():
+    suffix = uuid.uuid4().hex[:8]
+    uds_path = f"/tmp/hsm_ping_{suffix}.sock"
+    cfg = agconfig(
+        llmconfig(model="test-model", base_url="http://x/v1"),
+        hostserverconfig(uds_path=uds_path),
+        dataloggerconfig(db_path=f"/tmp/hsm_ping_{suffix}.db"),
+    )
+    agent = SimpleNamespace(
+        agname="agent-1",
+        agconfig=cfg,
+        data_logger=agDataLogger(cfg),
+        llm_usage_tracker=LlmUsageTracker(),
+    )
+    sandbox = SimpleNamespace(
+        ensure_real_gpu_acquired=lambda _agname, *, is_cancelled, holder=None: None,
+        current_real_gpu_ids=lambda: None,
+    )
+    manager = HostServerManager(
+        agent, sandbox, agskill(name="s", prompt="p", policy=agpolicy()), SimpleNamespace()
+    )
+    try:
+        manager.start()
+        with httpx2.Client(
+            transport=httpx2.HTTPTransport(uds=uds_path), base_url="http://localhost"
+        ) as client:
+            ping = lambda event_type, **payload: client.post(  # noqa: E731
+                "/interaction/daemon_ping", json={"type": event_type, "payload": payload}
+            )
+            assert ping("harness_bootstrap_progress", step="installing", ok=None).status_code == 200
+            assert manager.interaction_server.bootstrap_failure is None
+            assert (
+                ping("harness_bootstrap_progress", step="pip failed", ok=False).status_code == 200
+            )
+            assert manager.interaction_server.bootstrap_failure == "pip failed"
+            assert ping("harness_daemon_started", engine="agent-1").status_code == 200
+            # Only daemon lifecycle types may be written without a token.
+            assert ping("tool_call").status_code == 400
+            assert (
+                client.post(
+                    "/interaction/record_event", json={"type": "tool_call", "payload": {}}
+                ).status_code
+                == 401
+            )
+    finally:
+        manager.stop()

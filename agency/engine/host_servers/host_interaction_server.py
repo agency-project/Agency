@@ -75,6 +75,8 @@ class HostInteractionServer:
         # daemon's own /health to come up before the host can tell bootstrap
         # is still making progress (vs. genuinely hung).
         self.last_bootstrap_ping_ts: "float | None" = None
+        # The step text of a bootstrap ping reporting ok=False; the launcher's wait raises on it at once.
+        self.bootstrap_failure: "str | None" = None
         # Spans a caller opened via record_span(span_id=..., end_ts=None) and
         # has not yet closed. Generic -- any reporter (this class's own
         # admission/completion boundaries, or a harness reporting its own
@@ -482,6 +484,8 @@ class HostInteractionServer:
     ) -> None:
         if type == "harness_bootstrap_progress":
             self.last_bootstrap_ping_ts = time.monotonic()
+            if payload.get("ok") is False:
+                self.bootstrap_failure = str(payload.get("step"))
         self._data_logger.record_event(
             type,
             {
@@ -625,6 +629,20 @@ class HostInteractionServer:
                 update_latest_snapshot=request.get("update_latest_snapshot", False),
                 term_message=request.get("term_message"),
                 flush=request.get("flush", False),
+            )
+            return JSONResponse({"ok": True})
+
+        @app.post("/daemon_ping")
+        def _daemon_ping(request: dict, http_request: Request) -> JSONResponse:
+            # Tokenless (see _AttemptFenceMiddleware): the daemon pings before any attempt token exists.
+            if not str(request.get("type", "")).startswith(
+                ("harness_bootstrap_progress", "harness_daemon_")
+            ):
+                return JSONResponse({"error": "not a daemon ping type"}, status_code=400)
+            http_request.app.state.interaction_server.record_event(
+                request["type"],
+                request["payload"],
+                term_message=request.get("term_message"),
             )
             return JSONResponse({"ok": True})
 

@@ -830,8 +830,8 @@ def _ping_daemon_lifecycle(
             base_url="http://agency-host",
             timeout=3,
         ) as client:
-            client.post(
-                "/record_event",
+            response = client.post(
+                "/interaction/daemon_ping",
                 json={
                     "type": event_type,
                     "payload": payload,
@@ -839,8 +839,10 @@ def _ping_daemon_lifecycle(
                     "print_to_terminal": True,
                 },
             )
-    except Exception:  # noqa: S110 - best-effort ping, never the daemon's own outcome
-        pass
+            if response.status_code != 200:
+                print(f"daemon ping rejected: HTTP {response.status_code}", file=sys.stderr)
+    except Exception as exc:  # never the daemon's own outcome
+        print(f"daemon ping failed: {exc}", file=sys.stderr)
 
 
 def main(argv: "list[str] | None" = None) -> None:
