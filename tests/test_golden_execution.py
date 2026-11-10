@@ -235,7 +235,7 @@ def _exercise_golden_lifecycle(harness, golden_image, directory, monkeypatch):
     config = agconfig(
         agentconfig(harness=harness, log_dir=str(directory / "logs")),
         sandboxconfig(backend=CONTAINER_BACKEND, base_image=golden_image),
-        resourcesconfig(idle_cpus=2, idle_memory="2g"),
+        resourcesconfig(idle_cpus=None, idle_memory="2g"),
         llmconfig(
             provider="mock",
             model="claude-sonnet-4-6",
