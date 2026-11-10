@@ -423,7 +423,9 @@ def test_bootstrap_retries_a_failing_install_then_reports_one_failure(monkeypatc
 def test_ensure_harness_daemon_raises_at_once_on_a_bootstrap_failure_ping(monkeypatch, tmp_path):
     sandbox = _fake_sandbox(tmp_path)
     monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: False)
-    progress = SimpleNamespace(last_bootstrap_ping_ts=1.0, bootstrap_failure="pip exploded")
+    progress = SimpleNamespace(last_bootstrap_ping_ts=None, bootstrap_failure=None)
+    # The failing ping arrives once the bootstrap is running, i.e. after the launch command.
+    sandbox.exec_detached = lambda *a, **kw: setattr(progress, "bootstrap_failure", "pip exploded")
 
     start = time.monotonic()
     with pytest.raises(RuntimeError, match="bootstrap failed: pip exploded"):
@@ -455,3 +457,18 @@ def test_host_server_keeps_the_step_of_a_failed_bootstrap_ping():
     assert server.last_bootstrap_ping_ts is not None and server.bootstrap_failure is None
     record({"step": "pip exploded", "ok": False})
     assert server.bootstrap_failure == "pip exploded"
+
+
+def test_ensure_harness_daemon_clears_a_bootstrap_failure_left_by_an_earlier_launch(
+    monkeypatch, tmp_path
+):
+    sandbox = _fake_sandbox(tmp_path)
+    monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: True)
+    progress = SimpleNamespace(last_bootstrap_ping_ts=None, bootstrap_failure="old failure")
+
+    handle = launcher.ensure_harness_daemon(
+        sandbox, "/tmp/host.sock", "agent-1", "claude_code", progress_source=progress
+    )
+
+    assert handle.engine_name == "agent-1"
+    assert progress.bootstrap_failure is None

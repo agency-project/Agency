@@ -367,6 +367,10 @@ def ensure_harness_daemon(
         f"{bootstrap} && {daemon_cmd}"
     )
 
+    if progress_source is not None:
+        progress_source.bootstrap_failure = (
+            None  # a failure from an earlier launch must not abort this one
+        )
     sandbox.exec_detached(command, workdir="/workspace")
 
     deadline = time.monotonic() + timeout_s
