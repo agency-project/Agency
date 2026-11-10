@@ -30,7 +30,12 @@ if TYPE_CHECKING:
 # which forces exactly these two past the short-circuit so this class's
 # check_syscall() is actually consulted synchronously for them).
 _GPU_GATED_SYSCALLS = frozenset({"execve", "execveat"})
-_GPU_LEASE_EXEMPT_TOOLS = frozenset({"reserve_resource", "release_resource"})
+
+
+def _gpu_environment(gpu_ids: "list[int]") -> "dict[str, str]":
+    """Environment that scopes a process to *gpu_ids* (none visible when empty)."""
+    visible_devices = ",".join(str(gpu_id) for gpu_id in gpu_ids) if gpu_ids else "NoDevFiles"
+    return {"CUDA_VISIBLE_DEVICES": visible_devices, "HIP_VISIBLE_DEVICES": visible_devices}
 
 
 class HostInteractionServer:
@@ -92,7 +97,8 @@ class HostInteractionServer:
 
     def check_syscall(
         self, syscall: "agsyscallevent"
-    ) -> "tuple[bool, str | None, dict[str, str] | None]":
+    ) -> "tuple[bool, str | None, dict[str, str] | None, str | None]":
+        """Returns (allowed, reason, env_overrides, gpu_state); gpu_state is "granted" or "pending"."""
         if self._is_cancelled():
             return False, "agent invocation stopped", None
         hook = (self._policy.syscall_hooks or {}).get(syscall.syscall)
@@ -105,12 +111,35 @@ class HostInteractionServer:
                 result = (False, f"hook raised: {exc}")
             allowed, reason = result if isinstance(result, tuple) else (result, None)
         env_overrides = None
+        gpu_state = None
         sandbox = self._sandbox
-        gpu_ids = sandbox.current_real_gpu_ids() if sandbox is not None else None
-        if allowed and syscall.syscall in _GPU_GATED_SYSCALLS and gpu_ids is not None:
-            gpu_id_str = ",".join(str(g) for g in gpu_ids) if gpu_ids else "NoDevFiles"
-            env_overrides = {"CUDA_VISIBLE_DEVICES": gpu_id_str, "HIP_VISIBLE_DEVICES": gpu_id_str}
-        return allowed, reason, env_overrides
+        if allowed and syscall.syscall in _GPU_GATED_SYSCALLS and sandbox is not None:
+            reserved = sandbox._virtual_gpu_count_requested > 0
+            gpu_ids = (
+                sandbox.acquire_real_gpus_for(str(syscall.pid), block=False)
+                if reserved
+                else sandbox.current_real_gpu_ids()
+            )
+            if reserved and gpu_ids is None:
+                gpu_state = "pending"
+            elif gpu_ids is not None:
+                gpu_state = "granted" if reserved else None
+                env_overrides = _gpu_environment(gpu_ids)
+        return allowed, reason, env_overrides, gpu_state
+
+    def wait_for_gpus(self, pid: int) -> "dict[str, str] | None":
+        """Block until the sandbox holds a GPU lease for *pid*; None if the agent was cancelled."""
+        try:
+            gpu_ids = self._sandbox.acquire_real_gpus_for(
+                str(pid), block=True, is_cancelled=self._is_cancelled
+            )
+        except GpuWaitCancelled:
+            return None
+        return _gpu_environment(gpu_ids)
+
+    def gpu_holder_exit(self, pid: int) -> None:
+        if self._sandbox is not None:
+            self._sandbox.release_real_gpu_holder(str(pid))
 
     _ADMISSION_LABEL = {"tool": "TOOL   ", "syscall": "SYSCALL"}
 
@@ -361,13 +390,6 @@ class HostInteractionServer:
         allowed, reason = self.check_tool(tool_name, tool_input)
         sandbox = self._sandbox
         call_id = uuid.uuid4().hex
-        if allowed and sandbox is not None and tool_name not in _GPU_LEASE_EXEMPT_TOOLS:
-            try:
-                sandbox.ensure_real_gpu_acquired(
-                    self._agname, is_cancelled=self._is_cancelled, holder=call_id
-                )
-            except GpuWaitCancelled:
-                allowed, reason = False, "agent invocation cancelled"
         gpu_ids = sandbox.current_real_gpu_ids() if sandbox is not None else None
         identity = model_tool_call_id or (
             annotation.get("model_tool_call_id") if isinstance(annotation, dict) else None
@@ -405,24 +427,20 @@ class HostInteractionServer:
         duration_ns: int | None = None,
         started_wall_ns: int | None = None,
     ) -> None:
-        try:
-            self._record_completion(
-                "tool",
-                call_id,
-                {
-                    "result": result,
-                    "error": error,
-                    **({"duration_ns": duration_ns} if duration_ns is not None else {}),
-                    **({"started_wall_ns": started_wall_ns} if started_wall_ns is not None else {}),
-                },
-            )
-        finally:
-            if self._sandbox is not None:
-                self._sandbox.release_real_gpu_when_idle(call_id)
+        self._record_completion(
+            "tool",
+            call_id,
+            {
+                "result": result,
+                "error": error,
+                **({"duration_ns": duration_ns} if duration_ns is not None else {}),
+                **({"started_wall_ns": started_wall_ns} if started_wall_ns is not None else {}),
+            },
+        )
 
     def admit_syscall(self, syscall: "agsyscallevent") -> dict:
         """Admission + telemetry entry point for a syscall"""
-        allowed, reason, env_overrides = self.check_syscall(syscall)
+        allowed, reason, env_overrides, gpu_state = self.check_syscall(syscall)
         call_id = self._record_admission(
             "syscall",
             syscall.syscall,
@@ -444,6 +462,7 @@ class HostInteractionServer:
             "reason": reason,
             "call_id": call_id,
             "env_overrides": env_overrides,
+            "gpu_state": gpu_state,
         }
 
     def complete_syscall(
@@ -579,6 +598,16 @@ class HostInteractionServer:
             return JSONResponse(
                 http_request.app.state.interaction_server.admit_syscall(agsyscallevent(**request))
             )
+
+        @app.post("/gpu_wait")
+        def _gpu_wait(request: dict, http_request: Request) -> JSONResponse:
+            env_overrides = http_request.app.state.interaction_server.wait_for_gpus(request["pid"])
+            return JSONResponse({"env_overrides": env_overrides})
+
+        @app.post("/gpu_holder_exit")
+        def _gpu_holder_exit(request: dict, http_request: Request) -> JSONResponse:
+            http_request.app.state.interaction_server.gpu_holder_exit(request["pid"])
+            return JSONResponse({"ok": True})
 
         @app.post("/complete_syscall")
         def _complete_syscall(request: dict, http_request: Request) -> JSONResponse:

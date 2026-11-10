@@ -38,8 +38,10 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from ...observability.profiler import agprof
 from . import _ctypes_defs as pt
 from . import _seccomp_filter
+from .time_ctrl import TimeController
 
 
 @dataclass
@@ -71,9 +73,24 @@ class StopDecision:
     # syscall_exit_hook below) -- opaque to this module, just threaded
     # through from whatever syscall_hook's own policy.check() returned.
     call_id: "str | None" = None
+    # "granted": the exec holds a GPU lease; "pending": it must wait for one (see TracerLoop).
+    gpu_state: "str | None" = None
 
 
 _EPERM = 1
+# Empty polls after an event before the loop sleeps: a trapped clock read re-traps within microseconds.
+_BUSY_POLLS_AFTER_EVENT = 1000
+_TIME_TRAP_SYSCALLS = frozenset(
+    pt.SYSCALL_NUMBERS[name]
+    for name in (
+        "clock_gettime",
+        "gettimeofday",
+        "time",
+        "clock_nanosleep",
+        "futex",
+        "timerfd_settime",
+    )
+)
 
 
 def _terminal_screen(columns: int, lines: int):
@@ -212,6 +229,10 @@ class TracerLoop:
         syscall_exit_hook: "Callable[[SeccompStop, str | None, int], None] | None" = None,
         file_access: bool = False,
         checkpointable: bool = False,
+        time_control: bool = False,
+        time_realtime: bool = False,
+        gpu_wait_hook: "Callable[[SeccompStop], dict[str, str] | None] | None" = None,
+        gpu_exit_hook: "Callable[[int], None] | None" = None,
     ) -> None:
         self._syscalls = tuple(syscalls)
         self._syscall_hook = syscall_hook
@@ -222,6 +243,16 @@ class TracerLoop:
         # as before this existed.
         self._syscall_exit_hook = syscall_exit_hook
         self._file_access = file_access
+        self._time = TimeController(time_realtime) if time_control else None
+        # An exec that needs GPUs waits parked while a worker thread asks the host, with the tree frozen.
+        self._gpu_wait_hook = gpu_wait_hook
+        self._gpu_exit_hook = gpu_exit_hook
+        self._gpu_waiting: "dict[int, tuple[SeccompStop, pt.UserRegsStruct, StopDecision]]" = {}
+        self._gpu_grants: "list[tuple[int, dict[str, str] | None]]" = []
+        self._gpu_holders: "set[int]" = set()
+        self._paused_by_gpu_wait = False
+        # vfork child -> parent: the parent sleeps in the kernel until the child execs or exits.
+        self._vfork_blocked_parents: "dict[int, int]" = {}
         self._seize_mode = checkpointable
         self._checkpoint_detached = False
         self._checkpoint_seized = False
@@ -684,7 +715,11 @@ class TracerLoop:
         # Sync with parent: it must set PTRACE_O_TRACESECCOMP before we
         # install the filter and exec, or the syscall traps ENOSYS instead.
         os.kill(os.getpid(), signal.SIGSTOP)
-        _seccomp_filter.install_trace_filter(self._syscalls)
+        _seccomp_filter.install_trace_filter(
+            self._syscalls,
+            self._time is not None,
+            self._time is not None and self._time.virtualize_realtime,
+        )
         try:
             os.execve(argv[0], argv, dict(envp))
         except BaseException as exc:
@@ -698,6 +733,7 @@ class TracerLoop:
         (which has already handled the root process's initial stop and
         PTRACE_SETOPTIONS by the time this is called -- see `start()`)."""
         assert self.root_pid is not None
+        idle_polls = 0
         while True:
             if self._checkpoint_request is not None:
                 from . import _checkpoint_handoff
@@ -719,6 +755,42 @@ class TracerLoop:
                 to_resume = list(self._resume_requests)
                 self._resume_requests.clear()
                 self._resume_in_progress.update(pid for pid, _, _ in to_resume)
+                everything_parked = (
+                    bool(pending)
+                    and self._pause_requested
+                    and self._known_pids
+                    <= self._parked_pids | set(self._vfork_blocked_parents.values())
+                )
+                # Tasks parked inside a syscall stop cannot run injected syscalls.
+                injectable_pids = [
+                    pid
+                    for pid in self._parked_pids
+                    if pid not in self._parked_restarts and pid not in self._gpu_waiting
+                ]
+                gpu_grants, self._gpu_grants = self._gpu_grants, []
+            if self._time is not None:
+                if to_resume and self._time.frozen:
+                    self._time.thaw()
+                elif everything_parked and not self._time.frozen:
+                    self._time.freeze(injectable_pids)
+            for pid, env_overrides in gpu_grants:
+                if pid not in self._gpu_waiting:
+                    continue  # the task died while it waited
+                with self._lock:
+                    stop, regs, decision = self._gpu_waiting.pop(pid)
+                    self._parked_pids.discard(pid)
+                if env_overrides is None:
+                    decision = StopDecision(kind="deny")
+                else:
+                    merged_envp = {**(stop.envp or {}), **env_overrides}
+                    decision = StopDecision(
+                        "rewrite", new_envp=merged_envp, call_id=decision.call_id
+                    )
+                    self._gpu_holders.add(pid)
+                self._finish_seccomp_stop(pid, stop, regs, decision)
+                if self._paused_by_gpu_wait and not self._gpu_waiting:
+                    self._paused_by_gpu_wait = False
+                    self.resume()
             # resume()'s PTRACE_CONT must be issued from this dedicated
             # tracer thread -- ptrace's tracer identity is per-thread, so a
             # call from resume()'s own (arbitrary) caller thread would fail.
@@ -749,8 +821,11 @@ class TracerLoop:
                     self._forget(pid, -1)
                 break
             if got_pid == 0:
-                time.sleep(self._poll_interval_s)
+                idle_polls += 1
+                if idle_polls > _BUSY_POLLS_AFTER_EVENT:
+                    time.sleep(self._poll_interval_s)
                 continue
+            idle_polls = 0
             with self._lock:
                 unknown = got_pid not in self._known_pids
             if unknown:
@@ -813,6 +888,10 @@ class TracerLoop:
             pt.PTRACE_EVENT_CLONE,
         ):
             new_pid = pt.get_eventmsg(pid)
+            if pid in self._gpu_holders:
+                self._gpu_holders.add(new_pid)
+            if event == pt.PTRACE_EVENT_VFORK:
+                self._vfork_blocked_parents[new_pid] = pid
             self._remember_spawn(
                 new_pid,
                 is_process=None if event == pt.PTRACE_EVENT_CLONE else True,
@@ -821,6 +900,12 @@ class TracerLoop:
             return
         if sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_EXEC:
             self._commit_exec(pid)
+            self._vfork_blocked_parents.pop(pid, None)
+            if self._time is not None:
+                try:
+                    self._time.on_exec(pid)
+                except OSError:
+                    pass  # an unreadable stack just leaves this image on the real clock
             self._restart(pid)
             return
         if sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_EXIT:
@@ -959,8 +1044,8 @@ class TracerLoop:
         method itself may be called from any thread, e.g. a control-route
         handler)."""
         with self._lock:
-            parked = list(self._parked_pids)
-            self._parked_pids.clear()
+            parked = [pid for pid in self._parked_pids if pid not in self._gpu_waiting]
+            self._parked_pids.difference_update(parked)
             self._held_pids.clear()
             for pid in parked:
                 request = pt.PTRACE_SYSCALL if pid in self._pending_syscall_exit else pt.PTRACE_CONT
@@ -972,6 +1057,13 @@ class TracerLoop:
     def _handle_seccomp_stop(self, pid: int) -> None:
         regs = pt.get_regs(pid)
         nr = regs.orig_rax
+        if self._time is not None and nr in _TIME_TRAP_SYSCALLS:
+            try:
+                self._time.on_trap(pid, regs)
+            except OSError:
+                pass  # a bad user pointer: the kernel will fail the call itself
+            self._restart(pid)
+            return
         name = pt.SYSCALL_NAMES_BY_NUMBER.get(nr, f"nr:{nr}")
         argv, envp, path, address, port = _resolve_syscall_args(pid, regs, nr)
         stop = SeccompStop(
@@ -990,6 +1082,33 @@ class TracerLoop:
 
             stop.file_access = fd_metadata(pid, regs.rdi)
         decision = self._syscall_hook(stop)
+        if decision.gpu_state == "granted":
+            self._gpu_holders.add(pid)
+        elif decision.gpu_state == "pending" and self._gpu_wait_hook is not None:
+            with self._lock:
+                self._gpu_waiting[pid] = (stop, regs, decision)
+                self._parked_pids.add(pid)
+                self._state_changed.notify_all()
+            if not self._pause_requested:
+                self._paused_by_gpu_wait = True
+                self.pause()
+
+            def wait_for_gpus() -> None:
+                try:
+                    env_overrides = self._gpu_wait_hook(stop)
+                except Exception:  # noqa: BLE001 - a failed wait denies this exec, not the tracer
+                    env_overrides = None
+                with self._lock:
+                    self._gpu_grants.append((pid, env_overrides))
+
+            agprof.spawn_traced(wait_for_gpus).start()
+            return
+        self._finish_seccomp_stop(pid, stop, regs, decision)
+
+    def _finish_seccomp_stop(
+        self, pid: int, stop: SeccompStop, regs: "pt.UserRegsStruct", decision: StopDecision
+    ) -> None:
+        nr = stop.syscall_nr
         is_exec = nr in (pt.SYSCALL_NUMBERS["execve"], pt.SYSCALL_NUMBERS["execveat"])
         if decision.kind == "deny":
             # Skip the syscall (orig_rax=-1) and make it appear to have
@@ -1043,7 +1162,7 @@ class TracerLoop:
                     self._pending_exec_paths[pid] = (
                         decision.new_args[0]
                         if decision.kind == "rewrite" and decision.new_args
-                        else path
+                        else stop.path
                     )
         if decision.kind != "deny" and self._syscall_exit_hook is not None:
             # Request the matching syscall-exit-stop instead of resuming
@@ -1159,6 +1278,8 @@ class TracerLoop:
             self._pending_clone_pids.discard(pid)
             self._pending_exec_paths.pop(pid, None)
             self._pending_syscall_exit.pop(pid, None)
+            self._gpu_waiting.pop(pid, None)
+            self._vfork_blocked_parents.pop(pid, None)
             self._options_applied.discard(pid)
             self._parked_pids.discard(pid)
             self._resume_unobserved.discard(pid)
@@ -1173,6 +1294,10 @@ class TracerLoop:
             callbacks = list(self._exit_callbacks) if was_process else []
         for cb in callbacks:
             cb(pid, exit_code)
+        if pid in self._gpu_holders:
+            self._gpu_holders.discard(pid)
+            if self._gpu_exit_hook is not None:
+                self._gpu_exit_hook(pid)
         if pid == self.root_pid:
             # Failed/denied execs never produce PTRACE_EVENT_EXEC. Unblock
             # launch after their exit callbacks preserve the failed

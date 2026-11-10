@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 
 from agency.sandbox import base as sandbox_base
+from agency.sandbox.agsandbox import agSandbox
 from agency.sandbox.docker import _DockerBackend
 from agency.sandbox.podman import _PodmanBackend
 
@@ -170,3 +171,72 @@ class TestUpdateLimitsMemorySwap:
         (cmd,) = self._commands(_PodmanBackend, memory="8192m")
         assert "--memory=8192m" in cmd
         assert not any(arg.startswith("--memory-swap") for arg in cmd)
+
+
+class TestReleaseRealGpuHolder:
+    def test_releases_at_once_when_the_last_holder_is_dropped(self):
+        backend = _backend()
+        released = _reserved(backend)
+        first, second = backend._hold_real_gpus(), backend._hold_real_gpus()
+        backend.release_real_gpu_holder(first)
+        assert released == []
+        backend.release_real_gpu_holder(second)
+        assert released == [[0]]
+        assert backend._real_gpu_ids == []
+        assert backend._virtual_gpu_count_requested == 1
+
+    def test_does_not_wait_for_background_processes(self):
+        backend = _backend()
+        released = _reserved(backend)
+        holder = backend._hold_real_gpus()
+        with patch.object(backend, "get_live_pids", return_value={4242}):
+            backend.release_real_gpu_holder(holder)
+        assert released == [[0]]
+
+
+class TestAcquireRealGpusFor:
+    @staticmethod
+    def _sandbox(backend):
+        sandbox = agSandbox.__new__(agSandbox)
+        sandbox._agname = "lease-test"
+        sandbox._destroyed = True  # nothing to tear down in __del__
+        sandbox._backend = backend
+        return sandbox
+
+    def test_takes_the_lease_once_and_registers_every_holder(self):
+        backend = _backend()
+        calls = []
+        _reserved(backend)
+        backend._real_gpu_acquire_fn = lambda count, timeout=None, is_cancelled=None: (
+            calls.append((count, timeout)) or [3]
+        )
+        sandbox = self._sandbox(backend)
+        assert sandbox.acquire_real_gpus_for("10", block=True) == [3]
+        assert sandbox.acquire_real_gpus_for("11", block=False) == [3]
+        assert calls == [(1, None)]
+        assert backend._real_gpu_holders == {"10", "11"}
+
+    def test_non_blocking_attempt_returns_none_when_no_gpu_is_free(self):
+        backend = _backend()
+        _reserved(backend)
+        timeouts = []
+
+        def none_free(count, timeout=None, is_cancelled=None):
+            timeouts.append(timeout)
+            raise TimeoutError
+
+        backend._real_gpu_acquire_fn = none_free
+        assert self._sandbox(backend).acquire_real_gpus_for("10", block=False) is None
+        assert timeouts == [0]
+        assert backend._real_gpu_holders == set()
+
+    def test_blocking_wait_passes_the_cancel_callback_through(self):
+        backend = _backend()
+        _reserved(backend)
+        seen = []
+        backend._real_gpu_acquire_fn = lambda count, timeout=None, is_cancelled=None: (
+            seen.append(is_cancelled) or [0]
+        )
+        cancel_check = lambda: False  # noqa: E731
+        self._sandbox(backend).acquire_real_gpus_for("10", block=True, is_cancelled=cancel_check)
+        assert seen == [cancel_check]

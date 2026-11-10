@@ -72,6 +72,9 @@ PTRACE_TRACEME = 0
 PTRACE_PEEKDATA = 2
 PTRACE_CONT = 7
 PTRACE_SYSCALL = 24
+PTRACE_SINGLESTEP = 9
+PTRACE_GETSIGMASK = 0x420A
+PTRACE_SETSIGMASK = 0x420B
 PTRACE_GETREGS = 12
 PTRACE_SETREGS = 13
 PTRACE_SETOPTIONS = 0x4200
@@ -132,6 +135,17 @@ SYSCALL_NUMBERS: dict[str, int] = {
     "unlinkat": 263,
     "rename": 82,
     "renameat2": 316,
+    "poll": 7,
+    "nanosleep": 35,
+    "setitimer": 38,
+    "gettimeofday": 96,
+    "time": 201,
+    "futex": 202,
+    "restart_syscall": 219,
+    "timer_settime": 223,
+    "clock_gettime": 228,
+    "clock_nanosleep": 230,
+    "timerfd_settime": 286,
 }
 SYSCALL_NAMES_BY_NUMBER: dict[int, str] = {v: k for k, v in SYSCALL_NUMBERS.items()}
 

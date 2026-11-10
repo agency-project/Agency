@@ -387,6 +387,13 @@ class agsandbox_backend(AgSandboxBackendFields):
                 return
             self._release_real_gpus_now()
 
+    def release_real_gpu_holder(self, holder: str) -> None:
+        """Drop *holder*; once nobody holds the lease, return the GPUs to the pool at once."""
+        with self._real_gpu_lock:
+            self._real_gpu_holders.discard(holder)
+            if not self._real_gpu_holders:
+                self._release_real_gpus_now()
+
     def _release_real_gpus_now(self) -> None:
         gpu_ids = list(self._real_gpu_ids)
         if gpu_ids and self._real_gpu_release_fn is not None:

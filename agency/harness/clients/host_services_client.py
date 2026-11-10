@@ -156,12 +156,8 @@ class HostServicesClient:
         annotation: dict | None = None,
         model_tool_call_id: str | None = None,
     ) -> dict:
-        # A GPU-gated tool call can legitimately block on the host for as
-        # long as another agent holds the GPU it reserved -- unbounded by
-        # design (see agResourcePool.acquire_real_gpus), so this one call, unlike
-        # the rest of this client's (should-be-fast) calls, must not race a
-        # generic client timeout. Same reasoning as engine.py's
-        # `handle.client(timeout_s=None)` for run_harness_attempt.
+        # Admission is policy-only: GPU waits happen at exec (see wait_for_gpus), not here.
+        # No client timeout, as for engine.py's run_harness_attempt.
         resp = self.client.post(
             "/interaction/check_tool",
             json={
@@ -205,10 +201,7 @@ class HostServicesClient:
 
     def check_syscall_policy(
         self, token: str, syscall: "agsyscallevent"
-    ) -> "tuple[bool, str | None, str | None, dict[str, str] | None]":
-        # See check_tool_policy's comment above -- execve/execveat are
-        # exactly the syscalls a GPU reservation gates, so this call can
-        # also legitimately block on the host for an unbounded time.
+    ) -> "tuple[bool, str | None, str | None, dict[str, str] | None, str | None]":
         response = self.client.post(
             "/interaction/check_syscall",
             json=asdict(syscall),
@@ -222,7 +215,27 @@ class HostServicesClient:
             result.get("reason"),
             result.get("call_id"),
             result.get("env_overrides"),
+            result.get("gpu_state"),
         )
+
+    def wait_for_gpus(self, token: str, pid: int) -> "dict[str, str] | None":
+        # Blocks for as long as other agents hold every GPU, so no client timeout applies.
+        response = self.client.post(
+            "/interaction/gpu_wait",
+            json={"pid": pid},
+            headers=self._attempt_headers(token),
+            timeout=None,
+        )
+        response.raise_for_status()
+        return response.json().get("env_overrides")
+
+    def gpu_holder_exited(self, token: str, pid: int) -> None:
+        response = self.client.post(
+            "/interaction/gpu_holder_exit",
+            json={"pid": pid},
+            headers=self._attempt_headers(token),
+        )
+        response.raise_for_status()
 
     def complete_syscall_policy(
         self,

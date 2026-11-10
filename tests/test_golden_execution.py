@@ -26,7 +26,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -236,7 +235,7 @@ def _exercise_golden_lifecycle(harness, golden_image, directory, monkeypatch):
     config = agconfig(
         agentconfig(harness=harness, log_dir=str(directory / "logs")),
         sandboxconfig(backend=CONTAINER_BACKEND, base_image=golden_image),
-        resourcesconfig(idle_cpus=1, idle_memory="2g"),
+        resourcesconfig(idle_cpus=None, idle_memory="2g"),
         llmconfig(
             provider="mock",
             model="claude-sonnet-4-6",
@@ -272,7 +271,7 @@ def _exercise_golden_lifecycle(harness, golden_image, directory, monkeypatch):
         with agprof.span("ag.run(): first"):
             result = ag.run(skill, agdata(instruction=INPUT), max_steps=4)
         assert backend.entered.wait(WAIT_SECONDS), "first model request never arrived"
-        if harness in {"codex", "opencode", "grok"}:
+        if harness != "native":
             # The model request can precede native prompt acknowledgment. The
             # await span starts only after that acknowledgment enables controls.
             assert ready.wait(WAIT_SECONDS), "native prompt was not acknowledged"
@@ -290,12 +289,6 @@ def _exercise_golden_lifecycle(harness, golden_image, directory, monkeypatch):
             ag.resume()
             assert not ag.is_paused()
 
-        # Claude's filesystem acknowledgment of native prompt submission is
-        # collected asynchronously after the model request reaches the gateway.
-        # If this grace period is insufficient, the interrupted assertion below
-        # fails instead of mistaking queue fallback for live redirect delivery.
-        if harness == "claude_code":
-            time.sleep(0.25)
         with agprof.span("ag.redirect(): active execution"):
             ag.redirect(result, REDIRECT)
         if harness != "native":

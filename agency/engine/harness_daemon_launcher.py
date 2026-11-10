@@ -100,6 +100,8 @@ def _daemon_config(agconfig: "agconfig_cls | None") -> dict:
             "file_access": agconfig.ptrace.file_access,
             "profiler": agconfig.ptrace.profiler,
             "disable_harness_native_sandbox": agconfig.ptrace.disable_harness_native_sandbox,
+            "time_control": agconfig.ptrace.time_control,
+            "time_realtime": agconfig.ptrace.time_realtime,
         },
         "sandbox": {
             "checkpoint_fast_resume": agconfig.sandbox.checkpoint_fast_resume,

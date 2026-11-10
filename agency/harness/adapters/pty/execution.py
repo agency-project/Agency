@@ -113,7 +113,7 @@ def snapshot_session(root, harness, session_id):
 
 class PtyExecution:
     INPUT_TIMEOUT = 60.0
-    START_TIMEOUT = 45.0
+    START_TIMEOUT = 60.0
     ATTEMPT_TIMEOUT = 300.0
     POLL_INTERVAL_S = 0.2
 

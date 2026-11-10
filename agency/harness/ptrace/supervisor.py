@@ -65,6 +65,7 @@ class _TraceDecision:
     new_args: "list[str] | None" = None
     new_envp: "dict[str, str] | None" = None
     call_id: "str | None" = None
+    gpu_state: "str | None" = None
 
 
 def ptrace_available() -> bool:
@@ -607,6 +608,7 @@ class agProxyPtrace:
             env_overrides = (
                 decision[3] if isinstance(decision, tuple) and len(decision) > 3 else None
             )
+            gpu_state = decision[4] if isinstance(decision, tuple) and len(decision) > 4 else None
             if allowed and env_overrides:
                 # A GPU-scoping (or similar) env override only ever adds to
                 # the environment the process would otherwise have seen --
@@ -616,8 +618,11 @@ class agProxyPtrace:
                     kind="rewrite",
                     call_id=call_id,
                     new_envp={**(stop.envp or {}), **env_overrides},
+                    gpu_state=gpu_state,
                 )
-            return _TraceDecision(kind="allow" if allowed else "deny", call_id=call_id)
+            return _TraceDecision(
+                kind="allow" if allowed else "deny", call_id=call_id, gpu_state=gpu_state
+            )
 
         check_completion = getattr(policy, "check_completion", None)
         access_failures = 0
@@ -646,6 +651,14 @@ class agProxyPtrace:
         loop_args = dict(
             syscalls=syscalls, syscall_hook=syscall_hook, syscall_exit_hook=syscall_exit_hook
         )
+        if self._agconfig is not None and self._agconfig.ptrace.time_control:
+            loop_args["time_control"] = True
+            loop_args["time_realtime"] = self._agconfig.ptrace.time_realtime
+        wait_for_gpus = getattr(policy, "wait_for_gpus", None)
+        if wait_for_gpus is not None:
+            loop_args["gpu_wait_hook"] = lambda stop: wait_for_gpus(stop.pid)
+        if hasattr(policy, "gpu_holder_exited"):
+            loop_args["gpu_exit_hook"] = policy.gpu_holder_exited
         if self._agconfig is not None and self._agconfig.sandbox.checkpoint_fast_resume:
             loop_args["checkpointable"] = True
         if track_access:

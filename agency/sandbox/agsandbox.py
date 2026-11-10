@@ -13,7 +13,6 @@ from .base import agsandbox_backend, backend_for_image_kind
 from .container import _RUN_ID
 
 if TYPE_CHECKING:
-    from ..engine.clients import HarnessInteractionClient
     from ..orchestrator.agresources import agResourcePool
 
 
@@ -215,49 +214,36 @@ class agSandbox:
             return [] if self.agconfig.sandbox.gpu_passthrough else None
         return list(self._real_gpu_ids)
 
-    def ensure_real_gpu_acquired(
+    def acquire_real_gpus_for(
         self,
-        agname: str,
+        holder: str,
         *,
+        block: bool,
         is_cancelled: "Callable[[], bool] | None" = None,
-        holder: "str | None" = None,
-    ) -> None:
+    ) -> "list[int] | None":
+        """Register *holder* on the real-GPU lease, taking the lease first if nobody has.
+
+        Returns the leased ids, or None when *block* is False and no GPU is free right now."""
         if self._virtual_gpu_count_requested <= 0 or self._real_gpu_acquire_fn is None:
-            return
+            return self.current_real_gpu_ids()
         with self._backend._real_gpu_lock:
             if not self._real_gpu_ids:
-                self._acquire_real_gpus_with_harness_paused(agname, is_cancelled)
-            if holder is not None:
-                self._backend._real_gpu_holders.add(holder)
-
-    def _acquire_real_gpus_with_harness_paused(
-        self, agname: str, is_cancelled: "Callable[[], bool] | None"
-    ) -> None:
-        count = self._virtual_gpu_count_requested
-        client = self._harness_daemon_client(agname)
-        if client is None:
-            self._real_gpu_ids = self._real_gpu_acquire_fn(count, is_cancelled=is_cancelled)
-            return
-        with client:
-            try:
-                client.pause_harness()
-            except Exception as exc:
-                print(f"[agsandbox] WARNING: pause_harness() failed for {agname}: {exc}")
-            try:
-                self._real_gpu_ids = self._real_gpu_acquire_fn(count, is_cancelled=is_cancelled)
-            finally:
                 try:
-                    client.resume_harness()
-                except Exception as exc:
-                    print(f"[agsandbox] WARNING: resume_harness() failed for {agname}: {exc}")
+                    self._real_gpu_ids = self._real_gpu_acquire_fn(
+                        self._virtual_gpu_count_requested,
+                        timeout=None if block else 0,
+                        is_cancelled=is_cancelled,
+                    )
+                except TimeoutError:
+                    return None
+            self._backend._real_gpu_holders.add(holder)
+            return list(self._real_gpu_ids)
 
     def release_real_gpu_when_idle(self, holder: "str | None" = None) -> None:
         self._backend.release_real_gpu_when_idle(holder)
 
-    def _harness_daemon_client(self, agname: str) -> "HarnessInteractionClient | None":
-        handles = getattr(self, "_agency_harness_daemon_handles", None)
-        handle = handles.get(agname) if handles else None
-        return handle.client(timeout_s=10) if handle is not None else None
+    def release_real_gpu_holder(self, holder: str) -> None:
+        self._backend.release_real_gpu_holder(holder)
 
     def _own_host_pids(self) -> "set[int]":
         return self._backend._own_host_pids()
