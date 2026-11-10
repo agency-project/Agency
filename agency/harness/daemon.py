@@ -90,8 +90,8 @@ class _HostSyscallPolicy:
 
     ``execve``/``execveat`` are always forced onto the real synchronous
     path regardless of ``hooked_syscalls`` -- the host uses exactly this
-    admission to gate a pending GPU reservation (blocking until one is
-    actually free) and to scope CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES
+    admission to lease GPUs to the exec (or report it must wait, see
+    ``wait_for_gpus``) and to scope CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES
     onto the process about to run, neither of which the short-circuit's
     "decision known before launch" premise holds for.
     """
@@ -124,13 +124,19 @@ class _HostSyscallPolicy:
                 # A retained CLI can reach another exec stop as its completed
                 # attempt is revoked. Deny it without killing the tracer that
                 # must still quiesce the tree for checkpointing.
-                return False, "inactive harness attempt", None, None
+                return False, "inactive harness attempt", None, None, None
         _SYSCALL_LOG_POOL.submit(self._log_admission_best_effort, syscall)
-        return (not self._default_to_deny, None, None, None)
+        return (not self._default_to_deny, None, None, None, None)
+
+    def wait_for_gpus(self, pid: int) -> "dict[str, str] | None":
+        return self._host_services.wait_for_gpus(self._attempt_token, pid)
+
+    def gpu_holder_exited(self, pid: int) -> None:
+        _SYSCALL_LOG_POOL.submit(self._host_services.gpu_holder_exited, self._attempt_token, pid)
 
     def _log_admission_best_effort(self, syscall) -> None:
         try:
-            _allowed, _reason, call_id = self._host_services.check_syscall_policy(
+            _allowed, _reason, call_id, *_ = self._host_services.check_syscall_policy(
                 self._attempt_token, syscall
             )
         except Exception:

@@ -18,7 +18,7 @@ Pending values inside inputs add dependency edges. Future callbacks post events 
 
 The scheduler admits ready skill requests up to `max_concurrent_engines`, then dispatches an [engine](engine.md) through a reusable thread executor. Dependency-blocked work holds no engine slot. A slot stays occupied through startup, attempts, output repair and teardown until the scheduler handles completion. Pausing a harness does not release that slot.
 
-Engine capacity and sandbox resources have different lifetimes. GPU acquisition can wait after engine admission; GPU release follows sandbox stop or teardown. CPU and memory reservations update limits and accounting rather than acting as the same globally blocking queue.
+Engine capacity and sandbox resources have different lifetimes. GPU acquisition can wait after engine admission: once a sandbox has reserved GPUs, an `execve` that finds none free waits parked while the daemon freezes the whole harness tree and its clocks, and the lease returns to the pool when the last process exec'd under it exits or the sandbox stops. CPU and memory reservations update limits and accounting rather than acting as the same globally blocking queue.
 
 ## Settlement and controls
 

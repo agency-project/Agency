@@ -678,7 +678,7 @@ def test_syscall_racing_attempt_retirement_preserves_the_tracer(monkeypatch, com
             assert (
                 result is None
                 if completion
-                else result == (False, "inactive harness attempt", None, None)
+                else result == (False, "inactive harness attempt", None, None, None)
             )
         else:
             with pytest.raises(RuntimeError, match="request failed"):
@@ -769,7 +769,7 @@ def test_host_syscall_policy_short_circuits_unhooked_syscalls_by_default():
     decision = policy.check(None, event)
     # check() already returned even though the background RPC is still
     # blocked (or hasn't even started) -- proves it never waited on it.
-    assert decision == (True, None, None, None)
+    assert decision == (True, None, None, None, None)
 
     release_rpc.set()
     assert entered_rpc.wait(timeout=5)
@@ -793,7 +793,7 @@ def test_host_syscall_policy_short_circuits_to_deny_when_default_to_deny_set():
     policy = _HostSyscallPolicy(_FakeHostServices(), "attempt-token", default_to_deny=True)
     event = SimpleNamespace(syscall="open")
 
-    assert policy.check(None, event) == (False, None, None, None)
+    assert policy.check(None, event) == (False, None, None, None, None)
 
 
 def test_host_syscall_policy_logging_failure_never_raises():
@@ -812,7 +812,7 @@ def test_host_syscall_policy_logging_failure_never_raises():
     policy = _HostSyscallPolicy(_FakeHostServices(), "attempt-token")
     event = SimpleNamespace(syscall="open")
 
-    assert policy.check(None, event) == (True, None, None, None)
+    assert policy.check(None, event) == (True, None, None, None, None)
     assert attempted.wait(timeout=5)
 
 

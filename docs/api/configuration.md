@@ -63,7 +63,7 @@ The tables below list dataclass fields and defaults, including fresh mutable def
 - skill: step budget, binary validation probe timeout and error/output log truncation.
 - tool: advertised timeout, large output offloading and generated identifier length.
 - harness_adapter: CLI path, session resume hint and subagent permission.
-- ptrace: traced syscall names, opt-in file-access metadata, native sandbox switch; profiler field is reserved and has no current heavyweight-profiler effect.
+- ptrace: traced syscall names, opt-in file-access metadata, native sandbox switch, and harness time control (`time_control`, on by default, and opt-in `time_realtime`); profiler field is reserved and has no current heavyweight-profiler effect.
 - data_logger: per-object SQLite path/batching.
 - host_server: per-agent UDS path and service startup/shutdown deadlines.
 
@@ -258,6 +258,8 @@ The tables below list dataclass fields and defaults, including fresh mutable def
 | `file_access` | `bool` | `False` |
 | `profiler` | `str &#124; None` | `None` |
 | `disable_harness_native_sandbox` | `bool` | `True` |
+| `time_control` | `bool` | `True` |
+| `time_realtime` | `bool` | `False` |
 
 ### dataloggerconfig
 

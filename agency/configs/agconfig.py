@@ -327,6 +327,11 @@ class ptraceconfig(confignamespace):
     file_access: bool = False
     profiler: "str | None" = None  # reserved for a future heavyweight profiler (e.g. perf)
     disable_harness_native_sandbox: bool = True
+    # Freeze the harness clock and timers whenever the tree is paused (user pause or GPU wait).
+    # Clock reads trap, costing roughly 16-25 us each in the traced tree.
+    time_control: bool = True
+    # Also freeze real-time clocks (Date.now(), time()); the sandbox's wall clock then lags the host's.
+    time_realtime: bool = False
 
 
 @dataclass(slots=True)
