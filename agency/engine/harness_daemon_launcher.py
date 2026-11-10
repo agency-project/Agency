@@ -49,6 +49,8 @@ if TYPE_CHECKING:
     from ..sandbox.agsandbox import agSandbox
 
 _CONTAINER_GATEWAY_DIR = AGENCY_LLM_GATEWAY_CONTAINER_MOUNT
+_INSTALL_RETRIES = 5
+_INSTALL_RETRY_DELAY_S = 5
 
 
 def _daemon_log_path(engine_name: str) -> str:
@@ -148,7 +150,7 @@ def _package_bootstrap_command(
     cold pip install takes, capped by silence, not by a fixed total.
     """
     script = (
-        "import http.client, importlib, json, socket, subprocess, sys\n"
+        "import http.client, importlib, json, socket, subprocess, sys, time\n"
         f"ENGINE = {engine_name!r}\n"
         f"HOST_UDS = {container_host_uds_path!r}\n"
         "\n"
@@ -175,6 +177,8 @@ def _package_bootstrap_command(
         "    except Exception:\n"
         "        pass  # best-effort -- a ping failing must never abort bootstrap\n"
         "\n"
+        f"_INSTALL_RETRIES = {_INSTALL_RETRIES}\n"
+        f"_INSTALL_RETRY_DELAY_S = {_INSTALL_RETRY_DELAY_S}\n"
         f"packages = {packages!r}\n"
         f"install_missing = {install_missing!r}\n"
         "ping('checking required packages', ok=None)\n"
@@ -194,18 +198,24 @@ def _package_bootstrap_command(
         "    ping(msg, ok=False)\n"
         "    sys.exit(msg)\n"
         f"ping(f'installing missing packages: {{missing}}', ok=None)\n"
-        "try:\n"
+        "def install():\n"
         "    with socket.create_connection(('pypi.org', 443), timeout=30):\n"
         "        pass\n"
-        "except OSError:\n"
-        "    msg = f'cannot install {missing}: no outbound network (probed pypi.org:443)'\n"
-        "    ping(msg, ok=False)\n"
-        "    sys.exit(msg)\n"
-        "proc = subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', "
-        "*missing], timeout=180)\n"
-        "if proc.returncode != 0:\n"
-        "    ping(f'failed to install {missing}', ok=False)\n"
-        "    sys.exit(proc.returncode)\n"
+        "    subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', "
+        "*missing], timeout=600, check=True)\n"
+        "\n"
+        "for retry in range(_INSTALL_RETRIES + 1):\n"
+        "    try:\n"
+        "        install()\n"
+        "        break\n"
+        "    except Exception as exc:\n"
+        "        if retry == _INSTALL_RETRIES:\n"
+        "            msg = f'failed to install {missing} after {_INSTALL_RETRIES} retries: {exc}'\n"
+        "            ping(msg, ok=False)\n"
+        "            sys.exit(msg)\n"
+        "        ping(f'install failed ({exc}); retry {retry + 1}/{_INSTALL_RETRIES} "
+        "in {_INSTALL_RETRY_DELAY_S}s', ok=None)\n"
+        "        time.sleep(_INSTALL_RETRY_DELAY_S)\n"
         "ping(f'installed: {missing}')\n"
         "ping('starting harness daemon', ok=None)\n"
     )
@@ -266,7 +276,7 @@ def ensure_harness_daemon(
     harness: str,
     *,
     agconfig: "agconfig_cls | None" = None,
-    timeout_s: float = 300.0,
+    timeout_s: float = 600.0,
     progress_source: "HostInteractionServer | None" = None,
 ) -> DaemonHandle:
     """Ensure one ready Harness Manager exists for this engine and sandbox.
@@ -358,11 +368,15 @@ def ensure_harness_daemon(
 
     deadline = time.monotonic() + timeout_s
     last_seen_ping_ts = None
+    bootstrap_failure = None
     while time.monotonic() < deadline:
         if _is_ready(handle):
             _register_daemon(sandbox, handle)
             handles[engine_name] = handle
             return handle
+        bootstrap_failure = getattr(progress_source, "bootstrap_failure", None)
+        if bootstrap_failure is not None:
+            break
         if progress_source is not None:
             ping_ts = progress_source.last_bootstrap_ping_ts
             if ping_ts is not None and ping_ts != last_seen_ping_ts:
@@ -378,7 +392,9 @@ def ensure_harness_daemon(
     except Exception as exc:
         log_tail = f"could not read daemon log: {exc}"
     raise RuntimeError(
-        f"Harness Manager did not become ready at {handle.sandbox_uds_path!r} "
+        f"Harness Manager bootstrap failed: {bootstrap_failure}. Log ({log_path}):\n{log_tail}"
+        if bootstrap_failure is not None
+        else f"Harness Manager did not become ready at {handle.sandbox_uds_path!r} "
         f"within {timeout_s}s. Log ({log_path}):\n{log_tail}"
     )
 

@@ -75,6 +75,8 @@ class HostInteractionServer:
         # daemon's own /health to come up before the host can tell bootstrap
         # is still making progress (vs. genuinely hung).
         self.last_bootstrap_ping_ts: "float | None" = None
+        # The step text of a bootstrap ping reporting ok=False; the launcher's wait raises on it at once.
+        self.bootstrap_failure: "str | None" = None
         # Spans a caller opened via record_span(span_id=..., end_ts=None) and
         # has not yet closed. Generic -- any reporter (this class's own
         # admission/completion boundaries, or a harness reporting its own
@@ -482,6 +484,8 @@ class HostInteractionServer:
     ) -> None:
         if type == "harness_bootstrap_progress":
             self.last_bootstrap_ping_ts = time.monotonic()
+            if payload.get("ok") is False:
+                self.bootstrap_failure = str(payload.get("step"))
         self._data_logger.record_event(
             type,
             {

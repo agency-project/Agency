@@ -4,6 +4,9 @@ import json
 import os
 import shlex
 import shutil
+import socketserver
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -115,11 +118,11 @@ def test_pythonpath_is_exported_not_just_assigned(monkeypatch, tmp_path):
     )
 
 
-def test_ensure_harness_daemon_default_timeout_is_300s():
+def test_ensure_harness_daemon_default_timeout_is_600s():
     import inspect
 
     assert (
-        inspect.signature(launcher.ensure_harness_daemon).parameters["timeout_s"].default == 300.0
+        inspect.signature(launcher.ensure_harness_daemon).parameters["timeout_s"].default == 600.0
     )
 
 
@@ -135,7 +138,9 @@ def test_package_bootstrap_runs_before_the_daemon_module_is_ever_imported(monkey
     )
 
     command = sandbox.detached[0][0]
-    bootstrap_index = command.index("import http.client, importlib, json, socket, subprocess, sys")
+    bootstrap_index = command.index(
+        "import http.client, importlib, json, socket, subprocess, sys, time"
+    )
     daemon_index = command.index("-m agency.harness.daemon")
     assert bootstrap_index < daemon_index
     for pkg in launcher._REQUIRED_HARNESS_PACKAGES:
@@ -374,3 +379,79 @@ def test_explicit_binary_path_is_resolved_the_same_way(monkeypatch, tmp_path):
     command = shlex.split(sandbox.detached[0][0])
     config = json.loads(command[command.index("--config-json") + 1])
     assert config["harness_adapter"]["binary_path"] == configured
+
+
+def test_bootstrap_retries_a_failing_install_then_reports_one_failure(monkeypatch, tmp_path):
+    """Each failed install attempt pings a retry (ok=None); only the last one pings ok=False."""
+    monkeypatch.setattr(launcher, "_INSTALL_RETRIES", 2)
+    monkeypatch.setattr(launcher, "_INSTALL_RETRY_DELAY_S", 0)
+    host_socket = str(Path(tempfile.mkdtemp()) / "host.sock")
+    pings = []
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            while self.rfile.readline().strip():  # skip the request headers
+                pass
+            pings.append(json.loads(self.rfile.read1(65536))["payload"])
+            self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+
+    server = socketserver.ThreadingUnixStreamServer(host_socket, Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    script = launcher._package_bootstrap_command(
+        sys.executable,
+        ("agency_missing_package",),
+        True,
+        engine_name="agent-1",
+        container_host_uds_path=host_socket,
+    )
+    # Fail the pypi probe without touching the network.
+    stubbed = f"import socket; socket.create_connection = lambda *a, **k: 1/0; exec(compile(open({str(tmp_path / 'script.py')!r}).read(), 'bootstrap', 'exec'))"
+    (tmp_path / "script.py").write_text(shlex.split(script)[2])
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", stubbed], capture_output=True, text=True, timeout=60
+        )
+    finally:
+        server.shutdown()
+
+    assert result.returncode != 0
+    assert [ping["ok"] for ping in pings if "install" in ping["step"]] == [None, None, None, False]
+    assert "retry 1/2" in pings[2]["step"] and "retry 2/2" in pings[3]["step"]
+    assert "after 2 retries" in pings[-1]["step"]
+
+
+def test_ensure_harness_daemon_raises_at_once_on_a_bootstrap_failure_ping(monkeypatch, tmp_path):
+    sandbox = _fake_sandbox(tmp_path)
+    monkeypatch.setattr(launcher, "_is_ready", lambda *a, **kw: False)
+    progress = SimpleNamespace(last_bootstrap_ping_ts=1.0, bootstrap_failure="pip exploded")
+
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="bootstrap failed: pip exploded"):
+        launcher.ensure_harness_daemon(
+            sandbox,
+            "/tmp/host.sock",
+            "agent-1",
+            "claude_code",
+            timeout_s=30.0,
+            progress_source=progress,
+        )
+    assert time.monotonic() - start < 5
+
+
+def test_host_server_keeps_the_step_of_a_failed_bootstrap_ping():
+    from agency.engine.host_servers.host_interaction_server import HostInteractionServer
+
+    server = SimpleNamespace(
+        last_bootstrap_ping_ts=None,
+        bootstrap_failure=None,
+        _data_logger=SimpleNamespace(record_event=lambda *a, **k: None),
+        _profile_attributes={},
+    )
+    record = lambda payload: HostInteractionServer.record_event(  # noqa: E731
+        server, "harness_bootstrap_progress", payload
+    )
+
+    record({"step": "installing", "ok": None})
+    assert server.last_bootstrap_ping_ts is not None and server.bootstrap_failure is None
+    record({"step": "pip exploded", "ok": False})
+    assert server.bootstrap_failure == "pip exploded"
