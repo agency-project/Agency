@@ -632,6 +632,20 @@ class HostInteractionServer:
             )
             return JSONResponse({"ok": True})
 
+        @app.post("/daemon_ping")
+        def _daemon_ping(request: dict, http_request: Request) -> JSONResponse:
+            # Tokenless (see _AttemptFenceMiddleware): the daemon pings before any attempt token exists.
+            if not str(request.get("type", "")).startswith(
+                ("harness_bootstrap_progress", "harness_daemon_")
+            ):
+                return JSONResponse({"error": "not a daemon ping type"}, status_code=400)
+            http_request.app.state.interaction_server.record_event(
+                request["type"],
+                request["payload"],
+                term_message=request.get("term_message"),
+            )
+            return JSONResponse({"ok": True})
+
         @app.post("/record_span")
         def _record_span(request: dict, http_request: Request) -> JSONResponse:
             http_request.app.state.interaction_server.record_span(

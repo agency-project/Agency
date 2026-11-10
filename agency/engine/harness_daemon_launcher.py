@@ -140,7 +140,7 @@ def _package_bootstrap_command(
     agency process (e.g. the native harness adapter), where importing
     `agency` is already a given.
 
-    Pings the host's existing `/record_event` over `--host-uds` at each
+    Pings the host's existing `/interaction/daemon_ping` over `--host-uds` at each
     step (pure stdlib HTTP-over-AF_UNIX -- no `httpx`, since nothing from
     `agency` is importable yet either): both to print a live "still
     booting, here's what" line in place of the old silent wait (previously
@@ -170,12 +170,15 @@ def _package_bootstrap_command(
         "    }).encode()\n"
         "    try:\n"
         "        conn = _UDSConnection('localhost', timeout=3)\n"
-        "        conn.request('POST', '/record_event', body=body, "
+        "        conn.request('POST', '/interaction/daemon_ping', body=body, "
         "headers={'Content-Type': 'application/json'})\n"
-        "        conn.getresponse().read()\n"
+        "        response = conn.getresponse()\n"
+        "        response.read()\n"
         "        conn.close()\n"
-        "    except Exception:\n"
-        "        pass  # best-effort -- a ping failing must never abort bootstrap\n"
+        "        if response.status != 200:\n"
+        "            print(f'bootstrap ping rejected: HTTP {response.status}', file=sys.stderr)\n"
+        "    except Exception as exc:\n"
+        "        print(f'bootstrap ping failed: {exc}', file=sys.stderr)  # never abort bootstrap\n"
         "\n"
         f"_INSTALL_RETRIES = {_INSTALL_RETRIES}\n"
         f"_INSTALL_RETRY_DELAY_S = {_INSTALL_RETRY_DELAY_S}\n"
@@ -282,7 +285,7 @@ def ensure_harness_daemon(
     """Ensure one ready Harness Manager exists for this engine and sandbox.
 
     `progress_source`, when given, is this engine's own host-side
-    `HostInteractionServer` -- the same process the bootstrap's `/record_event`
+    `HostInteractionServer` -- the same process the bootstrap's `/interaction/daemon_ping`
     pings land on, so no network round trip is needed to observe them. Each
     fresh ping resets the wait deadline to `timeout_s` from *now*, so a
     genuinely slow-but-progressing cold pip install isn't penalized by a
