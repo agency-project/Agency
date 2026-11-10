@@ -67,6 +67,9 @@ class _ContainerAlreadyRunning(Exception):
 
 _RUNTIME: str | None = None
 
+_CGROUP_V1_CFS_QUOTA = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
+_CGROUP_V2_CONTROLLERS = "/sys/fs/cgroup/cgroup.controllers"
+
 # Per-run ID so concurrent and successive runs never share container/image names.
 # The same process-wide id every other run-scoped path uses (the LLM gateway/
 # UDS socket directory, the default log directory) -- avoids PID-reuse
@@ -1084,10 +1087,14 @@ class _ContainerBackendBase(agsandbox_backend):
 
     @staticmethod
     def _cfs_supported() -> bool:
-        """Return True if the kernel supports CFS CPU quota enforcement."""
-        import os
-
-        return os.path.exists("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        """Return True if the kernel can enforce a CPU quota (cgroup v1 CFS or the cgroup v2 cpu controller)."""
+        if os.path.exists(_CGROUP_V1_CFS_QUOTA):
+            return True
+        try:
+            with open(_CGROUP_V2_CONTROLLERS, encoding="utf-8") as controllers:
+                return "cpu" in controllers.read().split()
+        except OSError:
+            return False
 
     def _run(
         self,
