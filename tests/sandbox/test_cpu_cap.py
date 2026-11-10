@@ -54,17 +54,28 @@ wait
 after=$(usage_usec)
 echo "average_cpus_used=$(awk -v b=$before -v a=$after 'BEGIN {printf "%.2f", (a-b)/4000000}')"
 """
+_HOST_MEMORY_BYTES = int(open("/proc/meminfo", encoding="utf-8").readline().split()[1]) * 1024
+_MEMORY_LIMITS = {"0.5gb": ("512m", 512 * 2**20), "1gb": ("1g", 2**30), "3gb": ("3g", 3 * 2**30)}
 
 
-@pytest.mark.skipif(not _docker_available(), reason="Docker daemon not reachable")
-@pytest.mark.skipif((os.cpu_count() or 0) < 8, reason="needs more host CPUs than the cap")
-def test_container_cpu_cap_is_applied_and_enforced():
-    cpu_cap = 2
-    config = agconfig(sandboxconfig(backend="docker"), resourcesconfig(idle_cpus=cpu_cap))
+def _sandbox(**resources):
+    config = agconfig(sandboxconfig(backend="docker"), resourcesconfig(**resources))
     with patch("agency.sandbox.base.shutil.which", return_value="/usr/bin/docker"):
         with patch("agency.sandbox.container._runtime_works", return_value=True):
             sandbox = agSandbox(str(uuid.uuid4()), agconfig=config)
     sandbox._backend._base_image = "docker.io/library/python:3.12-slim"
+    return sandbox
+
+
+needs_docker = pytest.mark.skipif(not _docker_available(), reason="Docker daemon not reachable")
+
+
+@needs_docker
+@pytest.mark.parametrize("cpu_cap", [0.5, 1, 3])
+def test_container_cpu_cap_is_applied_and_enforced(cpu_cap):
+    if cpu_cap > (os.cpu_count() or 0):
+        pytest.skip(f"host has fewer than {cpu_cap} CPUs")
+    sandbox = _sandbox(idle_cpus=cpu_cap)
     try:
         limit_text, _ = sandbox.exec("cat /sys/fs/cgroup/cpu.max")
         quota_microseconds, period_microseconds = limit_text.split()
@@ -72,6 +83,31 @@ def test_container_cpu_cap_is_applied_and_enforced():
 
         measurement, _ = sandbox.exec(_BURN_AND_MEASURE)
         average_cpus_used = float(measurement.split("average_cpus_used=")[1].split()[0])
-        assert 1.0 < average_cpus_used <= cpu_cap * 1.15  # busy enough to be capped, never above it
+        assert cpu_cap * 0.3 < average_cpus_used <= cpu_cap * 1.15  # busy, yet never above the cap
+    finally:
+        sandbox.destroy()
+
+
+@needs_docker
+@pytest.mark.parametrize("memory_name", list(_MEMORY_LIMITS))
+def test_container_memory_cap_is_applied(memory_name):
+    memory, expected_bytes = _MEMORY_LIMITS[memory_name]
+    if expected_bytes > _HOST_MEMORY_BYTES:
+        pytest.skip(f"host has less than {memory_name} of memory")
+    sandbox = _sandbox(idle_memory=memory)
+    try:
+        limit_text, _ = sandbox.exec("cat /sys/fs/cgroup/memory.max")
+        assert int(limit_text.strip()) == expected_bytes
+    finally:
+        sandbox.destroy()
+
+
+@needs_docker
+def test_cpu_cap_above_the_host_cpu_count_is_clamped_to_it():
+    sandbox = _sandbox(idle_cpus=(os.cpu_count() or 1) + 4)  # the daemon refuses a larger quota
+    try:
+        limit_text, _ = sandbox.exec("cat /sys/fs/cgroup/cpu.max")
+        quota_microseconds, period_microseconds = limit_text.split()
+        assert int(quota_microseconds) / int(period_microseconds) == os.cpu_count()
     finally:
         sandbox.destroy()

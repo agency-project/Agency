@@ -815,8 +815,11 @@ class _ContainerBackendBase(agsandbox_backend):
             limit_flags = []
             if self._agconfig.resources.idle_memory is not None:
                 limit_flags.append(f"--memory={self._agconfig.resources.idle_memory}")
-            if self._cfs_supported():
-                limit_flags.append(f"--cpus={self._agconfig.resources.idle_cpus}")
+            if self._cfs_supported() and self._agconfig.resources.idle_cpus is not None:
+                # The daemon rejects a quota above the host's CPU count.
+                limit_flags.append(
+                    f"--cpus={min(self._agconfig.resources.idle_cpus, os.cpu_count())}"
+                )
             if self._agconfig.sandbox.cpuset_cpus is not None:
                 limit_flags.append(f"--cpuset-cpus={self._agconfig.sandbox.cpuset_cpus}")
             if self._agconfig.sandbox.cpuset_mems is not None:
@@ -1275,7 +1278,7 @@ class _ContainerBackendBase(agsandbox_backend):
             return
         cmd = [self._runtime, "update"]
         if cpus is not None and self._cfs_supported():
-            cmd.append(f"--cpus={cpus}")
+            cmd.append(f"--cpus={min(cpus, os.cpu_count())}")
         if memory is not None:
             cmd.append(f"--memory={memory}")
             if self._runtime == "docker":
