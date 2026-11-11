@@ -159,6 +159,16 @@ class TestReadUnderOffloadThreshold:
             offset += page["lines_shown"]
         assert seen == task.splitlines()
 
+    def test_an_over_long_line_is_omitted_with_a_warning(self, tmp_path):
+        path = tmp_path / "wide.txt"
+        path.write_text("a\n" + "x" * 50_000 + "\nc\n", encoding="utf-8")
+        _, page = self._read(path)
+        assert page["content"].split("\n")[0] == "1: a"
+        assert page["content"].split("\n")[1].startswith("2: [line omitted: 50000")
+        assert page["content"].endswith("3: c")
+        assert "[2]" in page["warning"]
+        assert page["truncated"] is False
+
     def test_a_short_file_is_still_one_page(self, tmp_path):
         path = tmp_path / "short.txt"
         path.write_text("a\nb\n", encoding="utf-8")

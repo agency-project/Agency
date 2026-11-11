@@ -219,9 +219,8 @@ def parse_grep_json_output(output: str) -> dict:
 # read: pagination
 # ---------------------------------------------------------------------------
 
+# Directory listings only; a file read is bounded by READ_MAX_SERIALIZED_CHARS alone.
 READ_DEFAULT_LIMIT = 2000
-READ_MAX_BYTES = 50 * 1024
-READ_MAX_LINE_LEN = 2000
 # A read result longer than _TOOL_OUTPUT_OFFLOAD_CHARS is offloaded to a file
 # whose body is the page's text alone, so the model never sees that the page
 # was truncated and takes it for the whole file. A page therefore stops before
@@ -230,37 +229,39 @@ READ_MAX_LINE_LEN = 2000
 READ_MAX_SERIALIZED_CHARS = _TOOL_OUTPUT_OFFLOAD_CHARS - 2_000
 
 
-def paginate_text(content: str, offset: int, limit: int) -> dict:
+def paginate_text(content: str, offset: int, limit: "int | None" = None) -> dict:
     """Apply offset/limit pagination to file content. Returns a plain dict
     with the same field names: type, content, offset, lines_shown,
-    total_lines, truncated."""
+    total_lines, truncated (plus warning when a line is omitted)."""
     all_lines = content.splitlines(keepends=True)
     total = len(all_lines)
     start = offset - 1
-    page_lines = all_lines[start : start + limit]
+    page_lines = all_lines[start : start + limit] if limit else all_lines[start:]
 
     raw: list[str] = []
-    bytes_used = 0
+    omitted_line_numbers: list[int] = []
     chars_used = 0
     cut = False
     for i, line in enumerate(page_lines):
         text = line.rstrip("\n")
-        if len(text) > READ_MAX_LINE_LEN:
-            text = text[:READ_MAX_LINE_LEN] + "... (truncated)"
         numbered = f"{start + i + 1}: {text}"
-        size = len(text.encode()) + 1
         # As json.dumps writes it; its two quotes stand in for the escaped
         # newline that joins it to the next line.
         chars = len(json.dumps(numbered))
-        if bytes_used + size > READ_MAX_BYTES or chars_used + chars > READ_MAX_SERIALIZED_CHARS:
+        if chars > READ_MAX_SERIALIZED_CHARS:
+            numbered = (
+                f"{start + i + 1}: [line omitted: {len(text)} characters exceed the read limit]"
+            )
+            omitted_line_numbers.append(start + i + 1)
+            chars = len(json.dumps(numbered))
+        if chars_used + chars > READ_MAX_SERIALIZED_CHARS:
             cut = True
             break
         raw.append(numbered)
-        bytes_used += size
         chars_used += chars
 
     more = cut or (start + len(page_lines) < total)
-    return {
+    result = {
         "type": "file",
         "content": "\n".join(raw),
         "offset": offset,
@@ -268,6 +269,12 @@ def paginate_text(content: str, offset: int, limit: int) -> dict:
         "total_lines": total,
         "truncated": more,
     }
+    if omitted_line_numbers:
+        result["warning"] = (
+            f"Lines {omitted_line_numbers} are too long to return and were omitted; "
+            "extract what you need from them with bash (grep -o, cut, head -c)."
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +577,7 @@ def _run_read_tool(arguments_json: str) -> str:
     file_path = str(args.get("file_path", ""))
     try:
         offset = int(args.get("offset") or 1)
-        limit = int(args.get("limit") or READ_DEFAULT_LIMIT)
+        limit = int(args.get("limit") or 0) or None
     except (TypeError, ValueError) as e:
         return json.dumps({"error": f"invalid offset/limit: {e}"})
 
@@ -580,7 +587,7 @@ def _run_read_tool(arguments_json: str) -> str:
         except OSError as e:
             return json.dumps({"error": str(e)})
         start = offset - 1
-        page = entries[start : start + limit]
+        page = entries[start : start + (limit or READ_DEFAULT_LIMIT)]
         return json.dumps(
             {
                 "path": file_path,
