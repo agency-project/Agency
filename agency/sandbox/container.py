@@ -185,17 +185,15 @@ def reap_orphaned_containers() -> None:
     container is already gone. Runs at most once per process, triggered by
     `_ContainerBackendBase.__init__`; best-effort throughout."""
     global _reap_done
-    if _reap_done:
-        return
-    with _reap_lock:
-        if _reap_done:
-            return
-        _reap_done = True
-        try:
-            _do_reap_orphaned_containers()
-        except Exception as _e:
-            # DATACOLLECTOR: append -- host-level, no single agname (runs once per process at startup).
-            print(f"[agsandbox_backend] WARNING: startup container reap failed: {_e}")
+    if not _reap_done:
+        with _reap_lock:
+            if not _reap_done:
+                _reap_done = True
+                try:
+                    _do_reap_orphaned_containers()
+                except Exception as _e:
+                    # DATACOLLECTOR: append -- host-level, no single agname (runs once per process at startup).
+                    print(f"[agsandbox_backend] WARNING: startup container reap failed: {_e}")
 
 
 def _do_reap_orphaned_containers() -> None:
@@ -284,9 +282,12 @@ def _reap_orphaned_lifecycle_images(runtime: str, own_pid: int) -> None:
         capture_output=True,
         timeout=agconfig_cls().sandbox.inspect_timeout_s,
     )
-    if result.returncode != 0:
-        return
-    for tag in result.stdout.decode("utf-8", errors="replace").splitlines():
+    tags = (
+        result.stdout.decode("utf-8", errors="replace").splitlines()
+        if result.returncode == 0
+        else []
+    )
+    for tag in tags:
         tag = tag.strip()
         if not tag or not tag.startswith("agency/lifecycle-"):
             continue
@@ -1553,8 +1554,8 @@ class _ContainerBackendBase(agsandbox_backend):
         checkpointer = getattr(self, "_checkpointer", None)
         if isinstance(checkpointer, CowZfsCheckpoint):
             checkpointer.checkpoint(self)
-            return
-        self._stop_image()
+        else:
+            self._stop_image()
 
     def _stop_image(self) -> None:
         """Hibernate the container: `docker/podman stop` it WITHOUT removing
@@ -1584,36 +1585,35 @@ class _ContainerBackendBase(agsandbox_backend):
         gpu_ids_to_release = (
             list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
         )
-        if not self._container_running():
-            agprof.container_stopped(self._prof_container_label())
-            return
-        # Clear PID tracking — stopping kills every process inside, same as rm.
-        self._watched_pids = {}
-        self._baseline_pids = None  # force a fresh capture on the next _ensure_started()
-        self._ptrace_managed_pids = set()
-        self._daemon_pids = set()  # PIDs do not identify daemons across a restart.
-        self._infrastructure_pids = {}
-        name = self._container_name()
+        was_running = self._container_running()
         stop_exc: Exception | None = None
-        try:
-            self._run(
-                [
-                    self._runtime,
-                    "stop",
-                    "-t",
-                    str(self._agconfig.sandbox.docker_stop_grace_s),
-                    name,
-                ],
-                check=True,
-                timeout=self._agconfig.sandbox.docker_stop_timeout_s,
-            )
-        except Exception as _e:
-            stop_exc = _e
+        if was_running:
+            # Clear PID tracking — stopping kills every process inside, same as rm.
+            self._watched_pids = {}
+            self._baseline_pids = None  # force a fresh capture on the next _ensure_started()
+            self._ptrace_managed_pids = set()
+            self._daemon_pids = set()  # PIDs do not identify daemons across a restart.
+            self._infrastructure_pids = {}
+            try:
+                self._run(
+                    [
+                        self._runtime,
+                        "stop",
+                        "-t",
+                        str(self._agconfig.sandbox.docker_stop_grace_s),
+                        self._container_name(),
+                    ],
+                    check=True,
+                    timeout=self._agconfig.sandbox.docker_stop_timeout_s,
+                )
+            except Exception as _e:
+                stop_exc = _e
         # Only release once actually confirmed not running -- a failed stop
         # may still leave the container (and the slot/GPU it holds) alive.
         if not self._container_running():
             agprof.container_stopped(self._prof_container_label())
-            self._release_runtime_slot()
+            if was_running:
+                self._release_runtime_slot()
             if gpu_ids_to_release and self._real_gpu_release_fn is not None:
                 self._real_gpu_release_fn(gpu_ids_to_release)
                 self._real_gpu_ids = []
@@ -1664,6 +1664,9 @@ class _ContainerBackendBase(agsandbox_backend):
         from .checkpoint import CowZfsCheckpoint
 
         checkpointer = getattr(self, "_checkpointer", None)
+        gpu_ids_to_release = (
+            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
+        )
         if (
             isinstance(checkpointer, CowZfsCheckpoint)
             and checkpointer.latest is not None
@@ -1675,67 +1678,63 @@ class _ContainerBackendBase(agsandbox_backend):
             if self._container_running():
                 self._stop_image()
             checkpointer.hibernated = True
-            return
-        gpu_ids_to_release = (
-            list(self._real_gpu_ids) if self._virtual_gpu_count_requested > 0 else []
-        )
-        if not self._container_status():
+        elif not self._container_status():
             agprof.container_stopped(self._prof_container_label())
             if gpu_ids_to_release and self._real_gpu_release_fn is not None:
                 self._real_gpu_release_fn(gpu_ids_to_release)
                 self._real_gpu_ids = []
                 self._real_gpu_holders.clear()
-            return
-        # Captured BEFORE the rm attempt: this is what tells us whether the
-        # runtime slot is actually ours to release below. Called on an
-        # already-hibernating container (stop() already ran and already
-        # released the slot -- the normal case for a skill-failure teardown,
-        # since every prior tool call's stop() already hibernated it), this
-        # is False, and the release check below correctly no-ops instead of
-        # crediting the semaphore a second time. Without this gate, a
-        # multiprocessing.Semaphore silently over-releases past its true
-        # capacity (confirmed empirically: release() raises no ValueError on
-        # over-release, unlike threading.BoundedSemaphore), letting more
-        # containers run concurrently than the kernel keyring quota actually
-        # supports -- the same class of bug the quota exists to prevent.
-        had_container = self._container_running()
-        self._watched_pids = {}
-        self._baseline_pids = None
-        self._ptrace_managed_pids = set()
-        self._daemon_pids = set()
-        self._infrastructure_pids = {}
-        name = self._container_name()
-        # rm_exc is raised at the end, after the release checks below still
-        # run -- an unconfirmed removal must reach the caller, but shouldn't
-        # cut short a release that's still legitimately possible to check.
-        rm_exc: Exception | None = None
-        for _attempt in range(self._agconfig.sandbox.rm_retry_attempts):
-            try:
-                self._rm_container(name)
-                rm_exc = None
-                break
-            except Exception as _e:
-                rm_exc = _e
-                if _attempt != self._agconfig.sandbox.rm_retry_attempts - 1:
-                    time.sleep(self._agconfig.sandbox.rm_retry_backoff_s)
-        if had_container and not self._container_running():
-            self._release_runtime_slot()
-        if (
-            gpu_ids_to_release
-            and self._real_gpu_release_fn is not None
-            and not self._container_running()
-        ):
-            self._real_gpu_release_fn(gpu_ids_to_release)
-            self._real_gpu_ids = []
-            self._real_gpu_holders.clear()
-        # A runtime client can raise even when the daemon completed removal;
-        # drop stale attribution whenever removal succeeded or the container
-        # is independently confirmed no longer running. Keep it registered if
-        # a failed rm left the workload alive.
-        if rm_exc is None or not self._container_running():
-            agprof.container_stopped(self._prof_container_label())
-        if rm_exc is not None:
-            raise rm_exc
+        else:
+            # Captured BEFORE the rm attempt: this is what tells us whether the
+            # runtime slot is actually ours to release below. Called on an
+            # already-hibernating container (stop() already ran and already
+            # released the slot -- the normal case for a skill-failure teardown,
+            # since every prior tool call's stop() already hibernated it), this
+            # is False, and the release check below correctly no-ops instead of
+            # crediting the semaphore a second time. Without this gate, a
+            # multiprocessing.Semaphore silently over-releases past its true
+            # capacity (confirmed empirically: release() raises no ValueError on
+            # over-release, unlike threading.BoundedSemaphore), letting more
+            # containers run concurrently than the kernel keyring quota actually
+            # supports -- the same class of bug the quota exists to prevent.
+            had_container = self._container_running()
+            self._watched_pids = {}
+            self._baseline_pids = None
+            self._ptrace_managed_pids = set()
+            self._daemon_pids = set()
+            self._infrastructure_pids = {}
+            name = self._container_name()
+            # rm_exc is raised at the end, after the release checks below still
+            # run -- an unconfirmed removal must reach the caller, but shouldn't
+            # cut short a release that's still legitimately possible to check.
+            rm_exc: Exception | None = None
+            for _attempt in range(self._agconfig.sandbox.rm_retry_attempts):
+                try:
+                    self._rm_container(name)
+                    rm_exc = None
+                    break
+                except Exception as _e:
+                    rm_exc = _e
+                    if _attempt != self._agconfig.sandbox.rm_retry_attempts - 1:
+                        time.sleep(self._agconfig.sandbox.rm_retry_backoff_s)
+            if had_container and not self._container_running():
+                self._release_runtime_slot()
+            if (
+                gpu_ids_to_release
+                and self._real_gpu_release_fn is not None
+                and not self._container_running()
+            ):
+                self._real_gpu_release_fn(gpu_ids_to_release)
+                self._real_gpu_ids = []
+                self._real_gpu_holders.clear()
+            # A runtime client can raise even when the daemon completed removal;
+            # drop stale attribution whenever removal succeeded or the container
+            # is independently confirmed no longer running. Keep it registered if
+            # a failed rm left the workload alive.
+            if rm_exc is None or not self._container_running():
+                agprof.container_stopped(self._prof_container_label())
+            if rm_exc is not None:
+                raise rm_exc
 
     def commit(self, tag: "str | None" = None) -> bool:
         return self.checkpoint(tag) is not None
@@ -2074,87 +2073,86 @@ class _ContainerBackendBase(agsandbox_backend):
         self._ensure_started()
 
     def destroy(self) -> None:
-        if self._destroyed:
-            return
-        if getattr(self, "_checkpoint_storage", None) is not None:
-            self._checkpoint_destroying = True
-            try:
-                if self._runtime == "docker":
-                    with agprof.span("checkpoint.cleanup"):
-                        self._checkpoint_storage.destroy()
+        if not self._destroyed:
+            if getattr(self, "_checkpoint_storage", None) is not None:
+                self._checkpoint_destroying = True
+                try:
+                    if self._runtime == "docker":
+                        with agprof.span("checkpoint.cleanup"):
+                            self._checkpoint_storage.destroy()
+                        self.rm_container()
+                        self._checkpoint_storage.prepared = False
+                        self._checkpoint_storage.dataset = None
+                    else:
+                        self.rm_container()
+                        with agprof.span("checkpoint.cleanup"):
+                            self._checkpoint_storage.destroy()
+                    self._destroyed = True
+                finally:
+                    self._checkpoint_destroying = False
+            else:
+                container_name = self._container_name()
+
+                # Best-effort courtesy signal before rm_container() forces the issue
+                # -- rm -f kills everything inside the container regardless of
+                # whether this succeeds, so a failure here doesn't change what
+                # actually happens, only whether tracked processes got a chance to
+                # react first. Warn, don't raise: nothing depends on this
+                # succeeding. Kept as destroy()'s own step (not something
+                # rm_container() does) since destroy() is called from
+                # atexit/__del__ on sandboxes that may never have gone through a
+                # normal stop() first -- rm_container() alone can't assume anything
+                # already gave tracked processes this courtesy.
+                if self._watched_pids:
+                    pids = " ".join(str(p) for p in self._watched_pids)
+                    try:
+                        self._container_exec(
+                            f"kill {pids} 2>/dev/null; true",
+                            timeout=self._agconfig.sandbox.exec_quick_timeout_s,
+                            shell="sh",
+                        )
+                    except Exception as _e:
+                        # DATACOLLECTOR: append, agname via container_name -- best-effort courtesy signal, low priority.
+                        print(
+                            f"[agsandbox_backend] WARNING: failed to kill PIDs {pids} in {container_name}: {_e}"
+                        )
+
+                # rm_container() already retries and only releases the runtime
+                # slot/GPU once actually confirmed gone (see its docstring) --
+                # destroy() reuses that logic rather than keeping its own copy,
+                # since two copies of this logic risk drifting out of sync when
+                # only one gets a fix.
+                # rm_exc is raised at the end, after the image/accumulator cleanup
+                # below has still been attempted -- an unconfirmed removal must
+                # reach the caller, but shouldn't cut short cleanup that doesn't
+                # depend on it.
+                rm_exc: Exception | None = None
+                try:
                     self.rm_container()
-                    self._checkpoint_storage.prepared = False
-                    self._checkpoint_storage.dataset = None
-                else:
-                    self.rm_container()
-                    with agprof.span("checkpoint.cleanup"):
-                        self._checkpoint_storage.destroy()
+                except Exception as _e:
+                    rm_exc = _e
+
+                # Remove the checkpoint image created during this sandbox's
+                # lifetime. Best-effort: a stray dangling image costs disk space,
+                # not correctness, so this warns rather than raising.
+                if self._checkpoint_image:
+                    try:
+                        self._rmi(self._checkpoint_image, force=True)
+                    except Exception as _e:
+                        # DATACOLLECTOR: append, agname via container_name -- best-effort cleanup failure, low priority.
+                        print(
+                            f"[agsandbox_backend] WARNING: checkpoint image cleanup failed for {container_name}: {_e}"
+                        )
+                    self._checkpoint_image = None
+
+                if self._accumulator_dir is not None:
+                    shutil.rmtree(self._accumulator_dir, ignore_errors=True)
+                    self._accumulator_dir = None
+                    self._accumulated_diff_path = None
+
+                if rm_exc is not None:
+                    raise rm_exc
                 self._destroyed = True
-            finally:
-                self._checkpoint_destroying = False
-            return
-        container_name = self._container_name()
-
-        # Best-effort courtesy signal before rm_container() forces the issue
-        # -- rm -f kills everything inside the container regardless of
-        # whether this succeeds, so a failure here doesn't change what
-        # actually happens, only whether tracked processes got a chance to
-        # react first. Warn, don't raise: nothing depends on this
-        # succeeding. Kept as destroy()'s own step (not something
-        # rm_container() does) since destroy() is called from
-        # atexit/__del__ on sandboxes that may never have gone through a
-        # normal stop() first -- rm_container() alone can't assume anything
-        # already gave tracked processes this courtesy.
-        if self._watched_pids:
-            pids = " ".join(str(p) for p in self._watched_pids)
-            try:
-                self._container_exec(
-                    f"kill {pids} 2>/dev/null; true",
-                    timeout=self._agconfig.sandbox.exec_quick_timeout_s,
-                    shell="sh",
-                )
-            except Exception as _e:
-                # DATACOLLECTOR: append, agname via container_name -- best-effort courtesy signal, low priority.
-                print(
-                    f"[agsandbox_backend] WARNING: failed to kill PIDs {pids} in {container_name}: {_e}"
-                )
-
-        # rm_container() already retries and only releases the runtime
-        # slot/GPU once actually confirmed gone (see its docstring) --
-        # destroy() reuses that logic rather than keeping its own copy,
-        # since two copies of this logic risk drifting out of sync when
-        # only one gets a fix.
-        # rm_exc is raised at the end, after the image/accumulator cleanup
-        # below has still been attempted -- an unconfirmed removal must
-        # reach the caller, but shouldn't cut short cleanup that doesn't
-        # depend on it.
-        rm_exc: Exception | None = None
-        try:
-            self.rm_container()
-        except Exception as _e:
-            rm_exc = _e
-
-        # Remove the checkpoint image created during this sandbox's
-        # lifetime. Best-effort: a stray dangling image costs disk space,
-        # not correctness, so this warns rather than raising.
-        if self._checkpoint_image:
-            try:
-                self._rmi(self._checkpoint_image, force=True)
-            except Exception as _e:
-                # DATACOLLECTOR: append, agname via container_name -- best-effort cleanup failure, low priority.
-                print(
-                    f"[agsandbox_backend] WARNING: checkpoint image cleanup failed for {container_name}: {_e}"
-                )
-            self._checkpoint_image = None
-
-        if self._accumulator_dir is not None:
-            shutil.rmtree(self._accumulator_dir, ignore_errors=True)
-            self._accumulator_dir = None
-            self._accumulated_diff_path = None
-
-        if rm_exc is not None:
-            raise rm_exc
-        self._destroyed = True
 
     def _lifecycle_tag(self) -> str:
         return f"agency/lifecycle-{self._name}".lower()

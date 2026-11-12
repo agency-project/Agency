@@ -155,31 +155,36 @@ def catalog(profile_dir: str, bucket: int = 0):
 def classify(name, command="", intent=""):
     text = f"{name} {command} {intent}".lower()
     if "llm:" in name:
-        return "model"
-    if "scheduler_queue" in name:
-        return "queue"
-    if "sync:" in name and ("wait" in name or "depend" in name):
-        return "dependency"
-    if not name.startswith("tool:"):
-        return "setup"
-    tool_name = name.removeprefix("tool:").lower()
-    if tool_name in ("write", "edit", "apply_patch"):
-        return "edit"
-    if tool_name in ("read", "read_file"):
-        return "read"
-    if tool_name in ("retrieve", "search"):
-        return "search"
-    if re.search(r"apply_patch|write_file|edit_file|\bsed\s+-i|\.write_text|patch\s+<<", text):
-        return "edit"
-    if re.search(r"pytest|npm test|cargo test|go test|unittest|run.*tests|validate", text):
-        return "test"
-    if re.search(r"\brg\b|\bgrep\b|\bfind\b|\bls\b|search", text):
-        return "search"
-    if re.search(r"\bcat\b|\bsed\b|read_file|read|inspect", text):
-        return "read"
-    if re.search(r"git diff|git status|review", text):
-        return "review"
-    return "tool"
+        output = "model"
+    elif "scheduler_queue" in name:
+        output = "queue"
+    elif "sync:" in name and ("wait" in name or "depend" in name):
+        output = "dependency"
+    elif not name.startswith("tool:"):
+        output = "setup"
+    else:
+        tool_name = name.removeprefix("tool:").lower()
+        if tool_name in ("write", "edit", "apply_patch"):
+            output = "edit"
+        elif tool_name in ("read", "read_file"):
+            output = "read"
+        elif tool_name in ("retrieve", "search"):
+            output = "search"
+        elif re.search(
+            r"apply_patch|write_file|edit_file|\bsed\s+-i|\.write_text|patch\s+<<", text
+        ):
+            output = "edit"
+        elif re.search(r"pytest|npm test|cargo test|go test|unittest|run.*tests|validate", text):
+            output = "test"
+        elif re.search(r"\brg\b|\bgrep\b|\bfind\b|\bls\b|search", text):
+            output = "search"
+        elif re.search(r"\bcat\b|\bsed\b|read_file|read|inspect", text):
+            output = "read"
+        elif re.search(r"git diff|git status|review", text):
+            output = "review"
+        else:
+            output = "tool"
+    return output
 
 
 def context_blocks(raw, previous):

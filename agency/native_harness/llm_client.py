@@ -113,9 +113,11 @@ class LLMClient:
             kwargs["agency_internal_kind"] = internal_kind
 
         last_error = "dispatch failed with no attempts made"
+        output = None
         for attempt in range(self.max_attempts):
             if self.deadline is not None and time.monotonic() >= self.deadline:
-                return self._dispatch_error("dispatch deadline exhausted", attempt, internal_kind)
+                output = self._dispatch_error("dispatch deadline exhausted", attempt, internal_kind)
+                break
             if self.observer is not None:
                 self.observer("model_attempt", {"attempt": attempt, "internal_kind": internal_kind})
             content_parts: "list[str]" = []
@@ -135,8 +137,8 @@ class LLMClient:
                             with profile_span(self, f"llm:retry_backoff[{attempt}]"):
                                 time.sleep(_retry_backoff_s(attempt))
                             continue
-                        return self._dispatch_error(last_error, attempt + 1, internal_kind)
-                    if resp.status_code == 429 and self.retry_rate_limits:
+                        output = self._dispatch_error(last_error, attempt + 1, internal_kind)
+                    elif resp.status_code == 429 and self.retry_rate_limits:
                         resp.read()
                         last_error = f"dispatch failed: {resp.status_code} {resp.text}"
                         try:
@@ -144,8 +146,8 @@ class LLMClient:
                         except (ValueError, AttributeError):
                             code = None
                         if code not in ("rate_limit_exceeded", "slow_down"):
-                            return self._dispatch_error(last_error, attempt + 1, internal_kind)
-                        if attempt < self.max_attempts - 1:
+                            output = self._dispatch_error(last_error, attempt + 1, internal_kind)
+                        elif attempt < self.max_attempts - 1:
                             hint = _server_retry_delay(resp.headers)
                             delay = (
                                 hint + random.uniform(0, 0.25)
@@ -156,111 +158,120 @@ class LLMClient:
                                 self.deadline is not None
                                 and time.monotonic() + delay >= self.deadline
                             ):
-                                return self._dispatch_error(
+                                output = self._dispatch_error(
                                     "dispatch deadline exhausted before rate-limit retry",
                                     attempt + 1,
                                     internal_kind,
                                 )
-                            with profile_span(self, f"llm:retry_backoff[{attempt}]"):
-                                time.sleep(delay)
-                            continue
-                        return self._dispatch_error(last_error, attempt + 1, internal_kind)
-                    if resp.status_code != 200:
+                            else:
+                                with profile_span(self, f"llm:retry_backoff[{attempt}]"):
+                                    time.sleep(delay)
+                                continue
+                        else:
+                            output = self._dispatch_error(last_error, attempt + 1, internal_kind)
+                    elif resp.status_code != 200:
                         resp.read()
-                        return self._dispatch_error(
+                        output = self._dispatch_error(
                             f"dispatch failed: {resp.status_code} {resp.text}",
                             attempt + 1,
                             internal_kind,
                         )
+                    else:
+                        for line in resp.iter_lines():
+                            if not line or not line.startswith("data: "):
+                                continue
+                            payload = line[len("data: ") :]
+                            if payload == "[DONE]":
+                                break
+                            received_chunk = True
+                            chunk = json.loads(payload)
+                            if chunk.get("error"):
+                                stream_error = chunk["error"]
+                                break
+                            if chunk.get("usage"):
+                                usage = chunk["usage"]
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            finish_reason = choices[0].get("finish_reason") or finish_reason
+                            if delta.get("content"):
+                                content_parts.append(delta["content"])
+                            if delta.get("reasoning_content"):
+                                reasoning_parts.append(delta["reasoning_content"])
+                            if delta.get("reasoning_signature"):
+                                signature_parts.append(delta["reasoning_signature"])
+                            for tc_delta in delta.get("tool_calls") or []:
+                                idx = tc_delta.get("index", 0)
+                                slot = tool_calls_raw.setdefault(
+                                    idx,
+                                    {
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    },
+                                )
+                                if tc_delta.get("id"):
+                                    slot["id"] = tc_delta["id"]
+                                fn_delta = tc_delta.get("function") or {}
+                                if fn_delta.get("name"):
+                                    slot["function"]["name"] += fn_delta["name"]
+                                if fn_delta.get("arguments"):
+                                    slot["function"]["arguments"] += fn_delta["arguments"]
 
-                    for line in resp.iter_lines():
-                        if not line or not line.startswith("data: "):
+                if output is None:
+                    if stream_error is not None:
+                        last_error = f"dispatch failed: {stream_error.get('message', stream_error)}"
+                        assembled = (
+                            content_parts or reasoning_parts or signature_parts or tool_calls_raw
+                        )
+                        if (
+                            stream_error.get("transient")
+                            and not assembled
+                            and attempt < self.max_attempts - 1
+                        ):
+                            with profile_span(self, f"llm:retry_backoff[{attempt}]"):
+                                time.sleep(_retry_backoff_s(attempt))
                             continue
-                        payload = line[len("data: ") :]
-                        if payload == "[DONE]":
-                            break
-                        received_chunk = True
-                        chunk = json.loads(payload)
-                        if chunk.get("error"):
-                            stream_error = chunk["error"]
-                            break
-                        if chunk.get("usage"):
-                            usage = chunk["usage"]
-                        choices = chunk.get("choices") or []
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta") or {}
-                        finish_reason = choices[0].get("finish_reason") or finish_reason
-                        if delta.get("content"):
-                            content_parts.append(delta["content"])
-                        if delta.get("reasoning_content"):
-                            reasoning_parts.append(delta["reasoning_content"])
-                        if delta.get("reasoning_signature"):
-                            signature_parts.append(delta["reasoning_signature"])
-                        for tc_delta in delta.get("tool_calls") or []:
-                            idx = tc_delta.get("index", 0)
-                            slot = tool_calls_raw.setdefault(
-                                idx,
+                        output = self._dispatch_error(last_error, attempt + 1, internal_kind)
+                    else:
+                        message = {"role": "assistant", "content": "".join(content_parts) or None}
+                        if reasoning_parts:
+                            message["reasoning_content"] = "".join(reasoning_parts)
+                        if signature_parts:
+                            message["reasoning_signature"] = "".join(signature_parts)
+                        if tool_calls_raw:
+                            message["tool_calls"] = [
+                                tool_calls_raw[i] for i in sorted(tool_calls_raw)
+                            ]
+                        output = {"message": message, "usage": usage}
+                        if self.observer is not None:
+                            self.observer(
+                                "model_dispatch_complete",
                                 {
-                                    "id": "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
+                                    "usage": usage,
+                                    "finish_reason": finish_reason,
+                                    "attempts": attempt + 1,
+                                    "internal_kind": internal_kind,
                                 },
                             )
-                            if tc_delta.get("id"):
-                                slot["id"] = tc_delta["id"]
-                            fn_delta = tc_delta.get("function") or {}
-                            if fn_delta.get("name"):
-                                slot["function"]["name"] += fn_delta["name"]
-                            if fn_delta.get("arguments"):
-                                slot["function"]["arguments"] += fn_delta["arguments"]
-
-                if stream_error is not None:
-                    last_error = f"dispatch failed: {stream_error.get('message', stream_error)}"
-                    assembled = (
-                        content_parts or reasoning_parts or signature_parts or tool_calls_raw
-                    )
-                    if (
-                        stream_error.get("transient")
-                        and not assembled
-                        and attempt < self.max_attempts - 1
-                    ):
-                        with profile_span(self, f"llm:retry_backoff[{attempt}]"):
-                            time.sleep(_retry_backoff_s(attempt))
-                        continue
-                    return self._dispatch_error(last_error, attempt + 1, internal_kind)
-
-                message = {"role": "assistant", "content": "".join(content_parts) or None}
-                if reasoning_parts:
-                    message["reasoning_content"] = "".join(reasoning_parts)
-                if signature_parts:
-                    message["reasoning_signature"] = "".join(signature_parts)
-                if tool_calls_raw:
-                    message["tool_calls"] = [tool_calls_raw[i] for i in sorted(tool_calls_raw)]
-                result = {"message": message, "usage": usage}
-                if self.observer is not None:
-                    self.observer(
-                        "model_dispatch_complete",
-                        {
-                            "usage": usage,
-                            "finish_reason": finish_reason,
-                            "attempts": attempt + 1,
-                            "internal_kind": internal_kind,
-                        },
-                    )
-                return result
 
             except (httpx.ConnectError, httpx.TimeoutException) as e:
                 last_error = f"llm endpoint unreachable: {e}"
                 if received_chunk:
-                    return self._dispatch_error(last_error, attempt + 1, internal_kind)
-                if attempt < self.max_attempts - 1:
+                    output = self._dispatch_error(last_error, attempt + 1, internal_kind)
+                elif attempt < self.max_attempts - 1:
                     with profile_span(self, f"llm:retry_backoff[{attempt}]"):
                         time.sleep(_retry_backoff_s(attempt))
                     continue
-                return self._dispatch_error(last_error, attempt + 1, internal_kind)
+                else:
+                    output = self._dispatch_error(last_error, attempt + 1, internal_kind)
+            if output is not None:
+                break
 
-        return self._dispatch_error(last_error, self.max_attempts, internal_kind)
+        if output is None:
+            output = self._dispatch_error(last_error, self.max_attempts, internal_kind)
+        return output
 
     def _dispatch_error(self, error, attempts, internal_kind):
         if self.observer is not None:

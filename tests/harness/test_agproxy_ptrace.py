@@ -1128,7 +1128,7 @@ def test_ptrace_ignoring_esrch_swallows_resume_of_an_already_dead_pid():
 
 @ptrace
 def test_tracer_thread_crash_unblocks_wait(monkeypatch):
-    """A dispatch error used to kill the tracer thread without setting _finished, so wait() hung and returncode stayed None."""
+    """wait() returns and returncode is set when the tracer thread dies on a dispatch error."""
     from agency.harness.ptrace._tracer_loop import TracerLoop
 
     dispatch = TracerLoop._dispatch

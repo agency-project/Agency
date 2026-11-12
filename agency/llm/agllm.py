@@ -237,25 +237,28 @@ class agllm:
         if provider == "mock":
             from .mock import _MockBackend
 
-            return _MockBackend(agconfig)
-        if provider == "bedrock":
+            output = _MockBackend(agconfig)
+        elif provider == "bedrock":
             if _is_anthropic_bedrock_model(model):
-                return _AnthropicBedrockBackend(agconfig)
-            if _needs_bedrock_converse(model):
-                return _BedrockConverseBackend(agconfig)
-            return _OpenAICompatibleBedrockBackend(agconfig)
-        if provider in ("anthropicAWS", "anthropic_aws"):
-            return _AnthropicAWSBackend(agconfig)
-        if provider == "anthropic":
-            return _AnthropicBackend(agconfig)
-        if provider == "openai_responses":
+                output = _AnthropicBedrockBackend(agconfig)
+            elif _needs_bedrock_converse(model):
+                output = _BedrockConverseBackend(agconfig)
+            else:
+                output = _OpenAICompatibleBedrockBackend(agconfig)
+        elif provider in ("anthropicAWS", "anthropic_aws"):
+            output = _AnthropicAWSBackend(agconfig)
+        elif provider == "anthropic":
+            output = _AnthropicBackend(agconfig)
+        elif provider == "openai_responses":
             from .openai_responses import _OpenAIResponsesBackend
 
-            return _OpenAIResponsesBackend(agconfig)
-        # _OpenAICompatibleBackend.__init__ -> change_config() validates the
-        # required base_url -- no need to duplicate that check here just to
-        # fail one call frame earlier.
-        return _OpenAICompatibleBackend(agconfig)
+            output = _OpenAIResponsesBackend(agconfig)
+        else:
+            # _OpenAICompatibleBackend.__init__ -> change_config() validates the
+            # required base_url -- no need to duplicate that check here just to
+            # fail one call frame earlier.
+            output = _OpenAICompatibleBackend(agconfig)
+        return output
 
     def make_client(self, timeout: httpx.Timeout):
         """Build and return a client exposing `.chat.completions.create()` and `.close()`."""
@@ -281,7 +284,7 @@ class agllm:
         """Single-model lookup for an ID the listing didn't contain verbatim
         (e.g. an alias the provider resolves server-side). None when this
         backend has no such lookup or the model is unknown to the provider."""
-        return None
+        return
 
     @staticmethod
     def _context_limit_of(info) -> "int | None":

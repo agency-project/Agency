@@ -185,36 +185,38 @@ def _resolve_syscall_args(
         # int execve(const char *pathname, char *const argv[], char *const envp[])
         path_ptr, argv_ptr, envp_ptr = regs.rdi, regs.rsi, regs.rdx
         path = pt.read_cstring(pid, path_ptr)
-        return pt.resolve_argv(pid, argv_ptr), pt.resolve_envp(pid, envp_ptr), path, None, None
-    if syscall_nr == pt.SYSCALL_NUMBERS["execveat"]:
+        output = pt.resolve_argv(pid, argv_ptr), pt.resolve_envp(pid, envp_ptr), path, None, None
+    elif syscall_nr == pt.SYSCALL_NUMBERS["execveat"]:
         # int execveat(int dirfd, const char *pathname, char *const argv[],
         #              char *const envp[], int flags) -- args shift by one
         # register relative to execve() because of the leading dirfd.
         path_ptr, argv_ptr, envp_ptr = regs.rsi, regs.rdx, regs.r10
         path = pt.read_cstring(pid, path_ptr)
-        return pt.resolve_argv(pid, argv_ptr), pt.resolve_envp(pid, envp_ptr), path, None, None
-    if syscall_nr == pt.SYSCALL_NUMBERS["open"]:
+        output = pt.resolve_argv(pid, argv_ptr), pt.resolve_envp(pid, envp_ptr), path, None, None
+    elif syscall_nr == pt.SYSCALL_NUMBERS["open"]:
         # int open(const char *pathname, int flags, mode_t mode)
-        return None, None, pt.read_cstring(pid, regs.rdi), None, None
-    if syscall_nr == pt.SYSCALL_NUMBERS["openat"]:
+        output = None, None, pt.read_cstring(pid, regs.rdi), None, None
+    elif syscall_nr == pt.SYSCALL_NUMBERS["openat"]:
         # int openat(int dirfd, const char *pathname, int flags, mode_t mode)
         # -- resolved as the raw pathname only; a relative path's real target
         # depends on dirfd, which this module does not resolve (that would
         # require reading the tracee's /proc/<pid>/fd/<dirfd> symlink) --
         # policies matching on relative paths should be aware of this.
-        return None, None, pt.read_cstring(pid, regs.rsi), None, None
-    if syscall_nr in (pt.SYSCALL_NUMBERS["connect"], pt.SYSCALL_NUMBERS["bind"]):
+        output = None, None, pt.read_cstring(pid, regs.rsi), None, None
+    elif syscall_nr in (pt.SYSCALL_NUMBERS["connect"], pt.SYSCALL_NUMBERS["bind"]):
         # int connect/bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         address, port = pt.read_sockaddr(pid, regs.rsi, regs.rdx)
-        return None, None, None, address, port
-    if syscall_nr == pt.SYSCALL_NUMBERS["sendto"]:
+        output = None, None, None, address, port
+    elif syscall_nr == pt.SYSCALL_NUMBERS["sendto"]:
         # ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
         #                const struct sockaddr *dest_addr, socklen_t addrlen)
         # -- buf/len (rsi/rdx) are deliberately never read: only the
         # destination address is policy-relevant here, never the payload.
         address, port = pt.read_sockaddr(pid, regs.r8, regs.r9)
-        return None, None, None, address, port
-    return None, None, None, None, None
+        output = None, None, None, address, port
+    else:
+        output = None, None, None, None, None
+    return output
 
 
 class TracerLoop:
@@ -392,7 +394,10 @@ class TracerLoop:
 
         def run_with_fork() -> None:
             try:
-                self._fork_and_exec(argv, envp, cwd, stdin_data)
+                if self._pty_size is not None:
+                    self._fork_pty(argv, envp, cwd)
+                else:
+                    self._fork_and_exec(argv, envp, cwd, stdin_data)
             except BaseException as exc:  # noqa: BLE001 -- surfaced to start()'s caller below
                 start_error.append(exc)
                 started.set()
@@ -400,7 +405,7 @@ class TracerLoop:
             started.set()
             try:
                 self._run()
-            finally:  # also when _run() raises: callers poll returncode or join()
+            finally:  # callers poll returncode and join(), so a dead tracer must set both
                 with self._lock:
                     if self._returncode is None:
                         self._returncode = -1
@@ -428,8 +433,6 @@ class TracerLoop:
         initial post-TRACEME stop + PTRACE_SETOPTIONS -- all on this
         thread, so `_run()`'s subsequent waitpid()/ptrace() calls are
         always issued by the same thread that attached."""
-        if self._pty_size is not None:
-            return self._fork_pty(argv, envp, cwd)
         stdout_r, stdout_w = os.pipe()
         stderr_r, stderr_w = os.pipe()
         stdin_r, stdin_w = os.pipe() if stdin_data is not None else (None, None)
@@ -841,102 +844,99 @@ class TracerLoop:
     def _dispatch(self, pid: int, status: int) -> None:
         if os.WIFEXITED(status):
             self._forget(pid, os.WEXITSTATUS(status))
-            return
-        if os.WIFSIGNALED(status):
+        elif os.WIFSIGNALED(status):
             self._forget(pid, -os.WTERMSIG(status))
-            return
-        assert os.WIFSTOPPED(status), (pid, status)
-        sig = os.WSTOPSIG(status)
-        event = (status >> 16) & 0xFF
+        else:
+            assert os.WIFSTOPPED(status), (pid, status)
+            sig = os.WSTOPSIG(status)
+            event = (status >> 16) & 0xFF
 
-        if event == pt.PTRACE_EVENT_STOP:
-            if pid not in self._options_applied:
-                self._classify_pending_clone(pid)
-                pt.ptrace(pt.PTRACE_SETOPTIONS, pid, 0, pt.ALL_TRACE_OPTIONS)
-                self._options_applied.add(pid)
-            with self._lock:
-                if pid in self._held_pids:
-                    self._parked_pids.add(pid)
-                    self._state_changed.notify_all()
-                    return
-            self._restart(pid)
-            return
-
-        with self._lock:
-            needs_options = pid not in self._options_applied
-        if needs_options:
-            # First-ever stop for this pid -- either the root process's
-            # post-TRACEME/SIGSTOP stop (handled separately in _run() for
-            # the root, so in practice this branch only fires for a newly
-            # auto-attached fork/vfork/clone child) or, defensively, any
-            # other pid we somehow see before applying options to it.
-            self._classify_pending_clone(pid)
-            _ptrace_ignoring_esrch(pt.PTRACE_SETOPTIONS, pid, 0, pt.ALL_TRACE_OPTIONS)
-            with self._lock:
-                self._options_applied.add(pid)
-            self._restart(pid)
-            return
-
-        if sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_SECCOMP:
-            self._handle_seccomp_stop(pid)
-            return
-        if sig == signal.SIGTRAP and event == 0:
-            with self._lock:
-                pending_exit = self._pending_syscall_exit.pop(pid, None)
-            if pending_exit is not None:
-                self._handle_syscall_exit_stop(pid, pending_exit)
-                return
-        if sig == signal.SIGTRAP and event in (
-            pt.PTRACE_EVENT_FORK,
-            pt.PTRACE_EVENT_VFORK,
-            pt.PTRACE_EVENT_CLONE,
-        ):
-            new_pid = pt.get_eventmsg(pid)
-            if pid in self._gpu_holders:
-                self._gpu_holders.add(new_pid)
-            if event == pt.PTRACE_EVENT_VFORK:
-                self._vfork_blocked_parents[new_pid] = pid
-            self._remember_spawn(
-                new_pid,
-                is_process=None if event == pt.PTRACE_EVENT_CLONE else True,
-            )
-            self._restart(pid)
-            return
-        if sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_EXEC:
-            self._commit_exec(pid)
-            self._vfork_blocked_parents.pop(pid, None)
-            if self._time is not None:
-                try:
-                    self._time.on_exec(pid)
-                except OSError:
-                    pass  # an unreadable stack just leaves this image on the real clock
-            self._restart(pid)
-            return
-        if sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_EXIT:
-            # Process disappearance itself is handled via WIFEXITED or
-            # WIFSIGNALED above; the pre-exit notification just resumes.
-            _ptrace_ignoring_esrch(pt.PTRACE_CONT, pid, 0, 0)
-            return
-        # A real signal being delivered to the tracee -- forward it
-        # untouched, except don't forward a bare SIGTRAP (which shouldn't
-        # occur here with the options above, but must never be forwarded
-        # as a real signal if it somehow does).
-        forward = 0 if sig == signal.SIGTRAP else sig
-        if sig == signal.SIGSTOP:
-            # Re-injecting SIGSTOP via PTRACE_CONT does not actually suspend
-            # a tracee -- restarting it always resumes it regardless of
-            # which signal is passed in the restart. The only way to truly
-            # hold it stopped is to withhold the restart call entirely once
-            # pause() has asked for this pid to stop -- see pause()/resume().
-            with self._lock:
-                if pid in self._pause_stop_pids:
-                    self._pause_stop_pids.discard(pid)
-                    forward = 0
-                if pid in self._held_pids:
-                    self._parked_pids.add(pid)
-                    self._state_changed.notify_all()
-                    return
-        self._restart(pid, data=forward)
+            if event == pt.PTRACE_EVENT_STOP:
+                if pid not in self._options_applied:
+                    self._classify_pending_clone(pid)
+                    pt.ptrace(pt.PTRACE_SETOPTIONS, pid, 0, pt.ALL_TRACE_OPTIONS)
+                    self._options_applied.add(pid)
+                with self._lock:
+                    parked = pid in self._held_pids
+                    if parked:
+                        self._parked_pids.add(pid)
+                        self._state_changed.notify_all()
+                if not parked:
+                    self._restart(pid)
+            else:
+                with self._lock:
+                    needs_options = pid not in self._options_applied
+                if needs_options:
+                    # First-ever stop for this pid -- either the root process's
+                    # post-TRACEME/SIGSTOP stop (handled separately in _run() for
+                    # the root, so in practice this branch only fires for a newly
+                    # auto-attached fork/vfork/clone child) or, defensively, any
+                    # other pid we somehow see before applying options to it.
+                    self._classify_pending_clone(pid)
+                    _ptrace_ignoring_esrch(pt.PTRACE_SETOPTIONS, pid, 0, pt.ALL_TRACE_OPTIONS)
+                    with self._lock:
+                        self._options_applied.add(pid)
+                    self._restart(pid)
+                elif sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_SECCOMP:
+                    self._handle_seccomp_stop(pid)
+                else:
+                    pending_exit = None
+                    if sig == signal.SIGTRAP and event == 0:
+                        with self._lock:
+                            pending_exit = self._pending_syscall_exit.pop(pid, None)
+                    if pending_exit is not None:
+                        self._handle_syscall_exit_stop(pid, pending_exit)
+                    elif sig == signal.SIGTRAP and event in (
+                        pt.PTRACE_EVENT_FORK,
+                        pt.PTRACE_EVENT_VFORK,
+                        pt.PTRACE_EVENT_CLONE,
+                    ):
+                        new_pid = pt.get_eventmsg(pid)
+                        if pid in self._gpu_holders:
+                            self._gpu_holders.add(new_pid)
+                        if event == pt.PTRACE_EVENT_VFORK:
+                            self._vfork_blocked_parents[new_pid] = pid
+                        self._remember_spawn(
+                            new_pid,
+                            is_process=None if event == pt.PTRACE_EVENT_CLONE else True,
+                        )
+                        self._restart(pid)
+                    elif sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_EXEC:
+                        self._commit_exec(pid)
+                        self._vfork_blocked_parents.pop(pid, None)
+                        if self._time is not None:
+                            try:
+                                self._time.on_exec(pid)
+                            except OSError:
+                                pass  # an unreadable stack just leaves this image on the real clock
+                        self._restart(pid)
+                    elif sig == signal.SIGTRAP and event == pt.PTRACE_EVENT_EXIT:
+                        # Process disappearance itself is handled via WIFEXITED or
+                        # WIFSIGNALED above; the pre-exit notification just resumes.
+                        _ptrace_ignoring_esrch(pt.PTRACE_CONT, pid, 0, 0)
+                    else:
+                        # A real signal being delivered to the tracee -- forward it
+                        # untouched, except don't forward a bare SIGTRAP (which shouldn't
+                        # occur here with the options above, but must never be forwarded
+                        # as a real signal if it somehow does).
+                        forward = 0 if sig == signal.SIGTRAP else sig
+                        parked = False
+                        if sig == signal.SIGSTOP:
+                            # Re-injecting SIGSTOP via PTRACE_CONT does not actually suspend
+                            # a tracee -- restarting it always resumes it regardless of
+                            # which signal is passed in the restart. The only way to truly
+                            # hold it stopped is to withhold the restart call entirely once
+                            # pause() has asked for this pid to stop -- see pause()/resume().
+                            with self._lock:
+                                if pid in self._pause_stop_pids:
+                                    self._pause_stop_pids.discard(pid)
+                                    forward = 0
+                                if pid in self._held_pids:
+                                    self._parked_pids.add(pid)
+                                    self._state_changed.notify_all()
+                                    parked = True
+                        if not parked:
+                            self._restart(pid, data=forward)
 
     def _restart(self, pid, request=None, data=0):
         # Every stop is a safe pause boundary, including syscall and clone
@@ -949,7 +949,7 @@ class TracerLoop:
                 self._parked_pids.add(pid)
                 self._parked_restarts[pid] = (request, data)
                 self._state_changed.notify_all()
-                return
+                return None
         return _ptrace_ignoring_esrch(request, pid, 0, data)
 
     def pause(self) -> None:

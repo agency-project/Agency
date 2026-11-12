@@ -412,12 +412,11 @@ class agSandbox:
 
     def destroy(self) -> None:
         with self._lock:
-            if self._destroyed:
-                return
-            with agprof.span("sandbox:destroy"):
-                self._backend.destroy()
-                self._destroyed = True
-                _live_sandboxes.discard(self)
+            if not self._destroyed:
+                with agprof.span("sandbox:destroy"):
+                    self._backend.destroy()
+                    self._destroyed = True
+                    _live_sandboxes.discard(self)
 
     def fork(self, new_name: str, agconfig: "agconfig_cls | None" = None) -> "agSandbox":
         """Return a new agSandbox for *new_name* starting from this

@@ -209,39 +209,38 @@ class KimiDriver(PtyDriver):
         return None if value is None else str(value)
 
     def _event_from_payload(self, payload):
-        if payload.get("agent_id") or payload.get("subagent_name"):
-            return None
-        kind = payload.get("hook_event_name")
-        session = payload.get("session_id")
-        if kind == "SessionStart":
-            if self.session_id is None:
-                self.session_id = session
-            self.started = True
-            return None
-        if session != self.session_id:
-            return None
-        if kind == "TurnStarted":
-            # The only event carrying both the identity and the prompt.
-            self._last_turn_id = self._turn(payload.get("turn_id"))
-            return {
-                "kind": "submit",
-                "turn_id": self._last_turn_id,
-                "prompt": payload.get("prompt"),
-            }
-        if kind == "Stop":
-            # Stop reports no turn of its own; completed() refuses to honour
-            # this until the transcript shows that turn actually ended.
-            return {"kind": "stop", "turn_id": self._last_turn_id, "text": ""}
-        if kind == "Interrupt":
-            return {"kind": "interrupt", "turn_id": self._turn(payload.get("turn_id"))}
-        if kind in {"StopFailure", "SessionEnd"}:
-            reason = payload.get("reason") or payload.get("error") or "session ended"
-            return {
-                "kind": "error",
-                "turn_id": self._turn(payload.get("turn_id")) or self._last_turn_id,
-                "error": f"Kimi {kind}: {reason}",
-            }
-        return None
+        output = None
+        if not (payload.get("agent_id") or payload.get("subagent_name")):
+            kind = payload.get("hook_event_name")
+            session = payload.get("session_id")
+            if kind == "SessionStart":
+                if self.session_id is None:
+                    self.session_id = session
+                self.started = True
+            elif session != self.session_id:
+                output = None
+            elif kind == "TurnStarted":
+                # The only event carrying both the identity and the prompt.
+                self._last_turn_id = self._turn(payload.get("turn_id"))
+                output = {
+                    "kind": "submit",
+                    "turn_id": self._last_turn_id,
+                    "prompt": payload.get("prompt"),
+                }
+            elif kind == "Stop":
+                # Stop reports no turn of its own; completed() refuses to honour
+                # this until the transcript shows that turn actually ended.
+                output = {"kind": "stop", "turn_id": self._last_turn_id, "text": ""}
+            elif kind == "Interrupt":
+                output = {"kind": "interrupt", "turn_id": self._turn(payload.get("turn_id"))}
+            elif kind in {"StopFailure", "SessionEnd"}:
+                reason = payload.get("reason") or payload.get("error") or "session ended"
+                output = {
+                    "kind": "error",
+                    "turn_id": self._turn(payload.get("turn_id")) or self._last_turn_id,
+                    "error": f"Kimi {kind}: {reason}",
+                }
+        return output
 
     def _transcript_events(self):
         """Recover completion when Kimi omits its best-effort Stop hook.

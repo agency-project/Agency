@@ -55,33 +55,32 @@ class AgentEngine:
 
     def close(self) -> None:
         """Idempotently stop host services owned by this fresh engine."""
+        client_error: "BaseException | None" = None
+        manager_error: "BaseException | None" = None
         with self._services_lock:
-            if self._services_closed:
-                return
-            client = self._sandbox_interaction_client
-            manager = self._host_server_manager
-            client_error: "BaseException | None" = None
-            manager_error: "BaseException | None" = None
-            if client is not None:
-                try:
-                    client.close()
-                except BaseException as exc:
-                    # The LLM server must still stop so streamed deltas are
-                    # finalized even when closing the sandbox RPC client fails.
-                    client_error = exc
-                else:
-                    self._sandbox_interaction_client = None
-            if manager is not None:
-                try:
-                    manager.stop()
-                except BaseException as exc:
-                    manager_error = exc
-                else:
-                    self._host_server_manager = None
-            self._daemon_handle = None
-            self._services_closed = (
-                self._sandbox_interaction_client is None and self._host_server_manager is None
-            )
+            if not self._services_closed:
+                client = self._sandbox_interaction_client
+                manager = self._host_server_manager
+                if client is not None:
+                    try:
+                        client.close()
+                    except BaseException as exc:
+                        # The LLM server must still stop so streamed deltas are
+                        # finalized even when closing the sandbox RPC client fails.
+                        client_error = exc
+                    else:
+                        self._sandbox_interaction_client = None
+                if manager is not None:
+                    try:
+                        manager.stop()
+                    except BaseException as exc:
+                        manager_error = exc
+                    else:
+                        self._host_server_manager = None
+                self._daemon_handle = None
+                self._services_closed = (
+                    self._sandbox_interaction_client is None and self._host_server_manager is None
+                )
 
         if client_error is not None:
             raise client_error

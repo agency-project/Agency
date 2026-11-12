@@ -216,62 +216,65 @@ class _PodmanBackend(_ContainerBackendBase):
         last matching entry wins -- layers.json is append-ordered, so
         that prefers the newest.
         """
+        output = None
         root_and_driver = self._podman_graph_root_and_driver()
         if root_and_driver is None:
-            return None  # already warned in _podman_info()/_podman_graph_root_and_driver()
-        data_root, driver = root_and_driver
-        if driver != "overlay":
-            # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this backend's lifetime.
-            print(
-                f"[agsandbox_backend] WARNING: unsupported podman storage driver "
-                f"{driver!r} -- fast squash path unavailable for this backend's lifetime",
-                file=__import__("sys").stderr,
-                flush=True,
-            )
-            return None
-        layers_json = data_root / "overlay-layers" / "layers.json"
-        try:
-            layers = json.loads(layers_json.read_text())
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as _e:
-            # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-            print(
-                f"[agsandbox_backend] WARNING: could not read/parse {layers_json}: {_e}",
-                file=__import__("sys").stderr,
-                flush=True,
-            )
-            return None
-        layer_id = None
-        try:
-            for entry in layers:
-                if entry.get("diff-digest") == diff_id:
-                    layer_id = entry.get("id")
-        except (AttributeError, TypeError) as _e:
-            # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-            print(
-                f"[agsandbox_backend] WARNING: {layers_json} has an unexpected shape: {_e}",
-                file=__import__("sys").stderr,
-                flush=True,
-            )
-            return None
-        if not layer_id:
-            # DATACOLLECTOR: append, agname=self._agname -- routine, expected on first squash cycle.
-            print(
-                f"[agsandbox_backend] WARNING: no layers.json entry found for "
-                f"diff_id {diff_id} in {layers_json} -- fast squash unavailable "
-                f"for this cycle",
-                file=__import__("sys").stderr,
-                flush=True,
-            )
-            return None
-        diff_dir = data_root / "overlay" / layer_id / "diff"
-        if not diff_dir.is_dir():
-            # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-            print(
-                f"[agsandbox_backend] WARNING: layers.json entry for diff_id "
-                f"{diff_id} points at {diff_dir}, which doesn't exist -- fast "
-                f"squash unavailable for this cycle",
-                file=__import__("sys").stderr,
-                flush=True,
-            )
-            return None
-        return diff_dir
+            output = None  # already warned in _podman_info()/_podman_graph_root_and_driver()
+        else:
+            data_root, driver = root_and_driver
+            if driver != "overlay":
+                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this backend's lifetime.
+                print(
+                    f"[agsandbox_backend] WARNING: unsupported podman storage driver "
+                    f"{driver!r} -- fast squash path unavailable for this backend's lifetime",
+                    file=__import__("sys").stderr,
+                    flush=True,
+                )
+            else:
+                layers_json = data_root / "overlay-layers" / "layers.json"
+                layer_id = None
+                try:
+                    layers = json.loads(layers_json.read_text())
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as _e:
+                    # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                    print(
+                        f"[agsandbox_backend] WARNING: could not read/parse {layers_json}: {_e}",
+                        file=__import__("sys").stderr,
+                        flush=True,
+                    )
+                else:
+                    try:
+                        for entry in layers:
+                            if entry.get("diff-digest") == diff_id:
+                                layer_id = entry.get("id")
+                    except (AttributeError, TypeError) as _e:
+                        # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                        print(
+                            f"[agsandbox_backend] WARNING: {layers_json} has an unexpected shape: {_e}",
+                            file=__import__("sys").stderr,
+                            flush=True,
+                        )
+                    else:
+                        if not layer_id:
+                            # DATACOLLECTOR: append, agname=self._agname -- routine, expected on first squash cycle.
+                            print(
+                                f"[agsandbox_backend] WARNING: no layers.json entry found for "
+                                f"diff_id {diff_id} in {layers_json} -- fast squash unavailable "
+                                f"for this cycle",
+                                file=__import__("sys").stderr,
+                                flush=True,
+                            )
+                        else:
+                            diff_dir = data_root / "overlay" / layer_id / "diff"
+                            if not diff_dir.is_dir():
+                                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                                print(
+                                    f"[agsandbox_backend] WARNING: layers.json entry for diff_id "
+                                    f"{diff_id} points at {diff_dir}, which doesn't exist -- fast "
+                                    f"squash unavailable for this cycle",
+                                    file=__import__("sys").stderr,
+                                    flush=True,
+                                )
+                            else:
+                                output = diff_dir
+        return output

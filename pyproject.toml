@@ -75,7 +75,11 @@ line-length = 100
 #
 # S110/S112 catch silent exception swallowing. Intentional best-effort
 # cleanup sites carry local explanations or report the failure.
-select = ["F", "S110", "S112"]
+# B012 forbids return/break/continue in finally (it silences exceptions);
+# PLR0911 caps returns per function; PLR1711 and RET501-503 keep explicit
+# returns consistent. Early exits in cleanup functions are checked by
+# scripts/check_cleanup_returns.py.
+select = ["F", "S110", "S112", "B012", "PLR0911", "PLR1711", "RET501", "RET502", "RET503"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

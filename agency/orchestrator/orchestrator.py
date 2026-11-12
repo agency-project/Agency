@@ -446,15 +446,14 @@ class GlobalAgentOrchestrator:
         # join its own event loop from inside that callback.
         if threading.current_thread() is self._scheduler_thread:
             wait = False
-        if not wait:
-            return
-        if ack is not None:
-            ack.result(timeout=timeout_s)
-        self._scheduler_thread.join(timeout=timeout_s)
-        # The scheduler reaches ``stopped`` only after every accepted engine
-        # request has completed.  This join therefore only reaps idle reusable
-        # workers (and any rejected work item left by a failed thread start).
-        self._execution_workers.shutdown(wait=True, cancel_futures=True)
+        if wait:
+            if ack is not None:
+                ack.result(timeout=timeout_s)
+            self._scheduler_thread.join(timeout=timeout_s)
+            # The scheduler reaches ``stopped`` only after every accepted engine
+            # request has completed.  This join therefore only reaps idle reusable
+            # workers (and any rejected work item left by a failed thread start).
+            self._execution_workers.shutdown(wait=True, cancel_futures=True)
 
     # ------------------------------------------------------------------
     # Scheduler loop and transitions

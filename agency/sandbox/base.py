@@ -380,12 +380,11 @@ class agsandbox_backend(AgSandboxBackendFields):
     def release_real_gpu_when_idle(self, holder: "str | None" = None) -> None:
         with self._real_gpu_lock:
             self._real_gpu_holders.discard(holder)
-            if self._real_gpu_holders or not self._real_gpu_ids:
-                return
-            if self.get_live_pids():
-                self._start_real_gpu_idle_thread()
-                return
-            self._release_real_gpus_now()
+            if not self._real_gpu_holders and self._real_gpu_ids:
+                if self.get_live_pids():
+                    self._start_real_gpu_idle_thread()
+                else:
+                    self._release_real_gpus_now()
 
     def release_real_gpu_holder(self, holder: str) -> None:
         """Drop *holder*; once nobody holds the lease, return the GPUs to the pool at once."""
@@ -416,11 +415,12 @@ class agsandbox_backend(AgSandboxBackendFields):
             while not self._destroyed:
                 time.sleep(_REAL_GPU_IDLE_POLL_INTERVAL_S)
                 with self._real_gpu_lock:
-                    if self._real_gpu_holders or not self._real_gpu_ids:
-                        return
-                    if not self.get_live_pids():
+                    done = bool(self._real_gpu_holders) or not self._real_gpu_ids
+                    if not done and not self.get_live_pids():
                         self._release_real_gpus_now()
-                        return
+                        done = True
+                if done:
+                    break
         finally:
             with self._real_gpu_lock:
                 self._real_gpu_idle_thread = None

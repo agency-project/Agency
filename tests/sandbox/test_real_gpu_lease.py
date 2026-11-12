@@ -146,6 +146,32 @@ class TestReleaseRealGpuWhenIdle:
         assert backend._virtual_gpu_count_requested == 0
 
 
+class TestStopReleasesRealGpus:
+    def test_stopping_the_container_gives_the_held_gpus_back(self):
+        backend = _backend()
+        released = _reserved(backend)
+        backend._hold_real_gpus()
+        with patch.object(backend, "_container_running", side_effect=[True, False]):
+            with patch.object(backend, "_run"), patch.object(backend, "_release_runtime_slot"):
+                backend._stop_image()
+        assert released == [[0]]
+        assert backend._real_gpu_ids == []
+
+    def test_an_already_stopped_container_still_gives_the_held_gpus_back(self):
+        backend = _backend()
+        released = _reserved(backend)
+        backend._hold_real_gpus()
+        with patch.object(backend, "_container_running", return_value=False):
+            with (
+                patch.object(backend, "_run") as run,
+                patch.object(backend, "_release_runtime_slot") as release_slot,
+            ):
+                backend._stop_image()
+        assert released == [[0]]
+        run.assert_not_called()
+        release_slot.assert_not_called()
+
+
 class TestUpdateLimitsMemorySwap:
     def _commands(self, cls, **limits):
         backend = _backend(cls)

@@ -2,7 +2,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import sys
 import tarfile
 import threading
 import contextvars
@@ -642,10 +641,6 @@ class agent:
         """Best-effort: log destruction. The sandbox (if any) cleans itself up
         via agSandbox.__del__ once this agent's reference to it is gone."""
         _live_agents.discard(self)
-        # During interpreter finalization sqlite/import machinery may already
-        # be closed. There is no reliable event sink left at that point.
-        if sys.is_finalizing():
-            return
         try:
             self.data_logger.record_event(
                 type="agent_state",
