@@ -141,7 +141,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 If you use Agency in your research, please cite [System Optimizations for Cost-Efficient Agent Harnesses](https://arxiv.org/abs/2611.12122):
 
 ```bibtex
-@misc{park2026optimizationscostefficientagentharnesses,
+@misc{agency2026costefficientharnesssystems,
       title={System Optimizations for Cost-Efficient Agent Harnesses},
       author={Jongseok Park and Jiaxiang Yu and Eric Zhou and Tony Hong and Sunga Kim and Yusuf Afifi and Ian Wong and Ion Stoica and Alvin Cheung},
       year={2026},
