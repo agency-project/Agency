@@ -400,8 +400,11 @@ class TracerLoop:
             started.set()
             try:
                 self._run()
-            finally:
-                self._finished.set()  # also when _run() raises, so join() cannot hang
+            finally:  # also when _run() raises: callers poll returncode or join()
+                with self._lock:
+                    if self._returncode is None:
+                        self._returncode = -1
+                self._finished.set()
 
         self._thread = threading.Thread(target=run_with_fork, name="agproxy_ptrace", daemon=True)
         self._thread.start()
