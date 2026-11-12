@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/agency_dark_v2.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/agency_light_v2.png">
-  <img alt="Agency logo" src="docs/assets/agency_light.png" width="500">
+  <img alt="Agency logo" src="docs/assets/agency_light_v2.png" width="500">
 </picture>
 
 Live debugging and systems profiling for AI agents.
