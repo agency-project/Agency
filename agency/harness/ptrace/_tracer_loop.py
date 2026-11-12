@@ -398,7 +398,10 @@ class TracerLoop:
                 started.set()
                 return
             started.set()
-            self._run()
+            try:
+                self._run()
+            finally:
+                self._finished.set()  # also when _run() raises, so join() cannot hang
 
         self._thread = threading.Thread(target=run_with_fork, name="agproxy_ptrace", daemon=True)
         self._thread.start()
@@ -832,8 +835,6 @@ class TracerLoop:
                 self._remember_spawn(got_pid, is_process=None, unannounced=True)
             self._dispatch(got_pid, status)
 
-        self._finished.set()
-
     def _dispatch(self, pid: int, status: int) -> None:
         if os.WIFEXITED(status):
             self._forget(pid, os.WEXITSTATUS(status))
@@ -1055,7 +1056,12 @@ class TracerLoop:
             self._state_changed.notify_all()
 
     def _handle_seccomp_stop(self, pid: int) -> None:
-        regs = pt.get_regs(pid)
+        try:
+            regs = pt.get_regs(pid)
+        except pt.PtraceError as exc:
+            if exc.errno != errno.ESRCH:
+                raise
+            return  # the task died; waitpid reports its exit
         nr = regs.orig_rax
         if self._time is not None and nr in _TIME_TRAP_SYSCALLS:
             try:
