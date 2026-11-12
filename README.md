@@ -135,3 +135,19 @@ For Python integration, see [`examples/quickstart.py`](examples/quickstart.py). 
 Agency is open source. Contributions, bug reports, and feedback are welcome.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+## Citation
+
+If you use Agency in your research, please cite [System Optimizations for Cost-Efficient Agent Harnesses](https://arxiv.org/abs/2611.12122):
+
+```bibtex
+@misc{agency2026costefficientharnesssystems,
+      title={System Optimizations for Cost-Efficient Agent Harnesses},
+      author={Jongseok Park and Jiaxiang Yu and Eric Zhou and Tony Hong and Sunga Kim and Yusuf Afifi and Ian Wong and Ion Stoica and Alvin Cheung},
+      year={2026},
+      eprint={2611.12122},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2611.12122},
+}
+```
