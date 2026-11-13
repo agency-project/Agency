@@ -224,27 +224,28 @@ class agResourcePool:
         """Release *gpu_ids* (held by *sandbox*) back to the pool. No "is
         it idle yet" wait: callers already tear down synchronously first.
         Guards against an unknown gpu_id and a double-release."""
-        if not gpu_ids:
-            return
-        with self._gpu_cond:
+        if gpu_ids:
+            with self._gpu_cond:
+                for gpu_id in gpu_ids:
+                    if gpu_id not in self.gpus:
+                        # DATACOLLECTOR: append -- process-level, real usage-bug signal.
+                        print(
+                            f"[agresources] WARNING: release_real_gpus called with unknown gpu_id={gpu_id}"
+                        )
+                        continue
+                    if gpu_id in self._free_gpus:
+                        # DATACOLLECTOR: append -- process-level, real invariant-violation signal.
+                        print(f"[agresources] WARNING: GPU double-release for gpu_id={gpu_id}")
+                        continue
+                    self._free_gpus.add(gpu_id)
+                    self._gpus_acquired = max(0, self._gpus_acquired - 1)
+                self._dispatch_gpu_queue_locked()
             for gpu_id in gpu_ids:
-                if gpu_id not in self.gpus:
-                    # DATACOLLECTOR: append -- process-level, real usage-bug signal.
-                    print(
-                        f"[agresources] WARNING: release_real_gpus called with unknown gpu_id={gpu_id}"
-                    )
-                    continue
-                if gpu_id in self._free_gpus:
-                    # DATACOLLECTOR: append -- process-level, real invariant-violation signal.
-                    print(f"[agresources] WARNING: GPU double-release for gpu_id={gpu_id}")
-                    continue
-                self._free_gpus.add(gpu_id)
-                self._gpus_acquired = max(0, self._gpus_acquired - 1)
-            self._dispatch_gpu_queue_locked()
-        for gpu_id in gpu_ids:
-            agprof.gpu_lease_end(gpu_id)
-        sandbox._real_gpu_ids = []
-        self._update_resource_log(who=sandbox._name, action="release_gpu", gpu_ids=list(gpu_ids))
+                agprof.gpu_lease_end(gpu_id)
+            sandbox._real_gpu_ids = []
+            self._update_resource_log(
+                who=sandbox._name, action="release_gpu", gpu_ids=list(gpu_ids)
+            )
 
     def acquire_cpu_mem(
         self, sandbox, cpus: "float | None" = None, memory_mb: "float | None" = None
@@ -287,24 +288,23 @@ class agResourcePool:
         idle_memory is a pre-formatted docker string (e.g. "1g") or None
         (unlimited) -- unlike memory_mb on the acquire side, it's not a raw
         MB number, so it's passed straight through rather than floored."""
-        if not (cpu or memory):
-            return
-        held_cpus = sandbox._cpu_acquired if cpu else 0.0
-        held_mb = sandbox._memory_acquired_mb if memory else 0
-        sandbox.update_limits(
-            cpus=_floor(self.agconfig.resources.idle_cpus, MIN_CPUS) if cpu else None,
-            memory=self.agconfig.resources.idle_memory if memory else None,
-        )
-        if cpu:
-            sandbox._cpu_acquired = 0.0
-        if memory:
-            sandbox._memory_acquired_mb = 0
-        with self._cpu_mem_cond:
-            self.cpus_acquired = max(0.0, self.cpus_acquired - held_cpus)
-            self.memory_acquired_mb = max(0, self.memory_acquired_mb - held_mb)
-        self._update_resource_log(
-            who=sandbox._name, action="release_cpu_mem", cpus=held_cpus, memory_mb=held_mb
-        )
+        if cpu or memory:
+            held_cpus = sandbox._cpu_acquired if cpu else 0.0
+            held_mb = sandbox._memory_acquired_mb if memory else 0
+            sandbox.update_limits(
+                cpus=_floor(self.agconfig.resources.idle_cpus, MIN_CPUS) if cpu else None,
+                memory=self.agconfig.resources.idle_memory if memory else None,
+            )
+            if cpu:
+                sandbox._cpu_acquired = 0.0
+            if memory:
+                sandbox._memory_acquired_mb = 0
+            with self._cpu_mem_cond:
+                self.cpus_acquired = max(0.0, self.cpus_acquired - held_cpus)
+                self.memory_acquired_mb = max(0, self.memory_acquired_mb - held_mb)
+            self._update_resource_log(
+                who=sandbox._name, action="release_cpu_mem", cpus=held_cpus, memory_mb=held_mb
+            )
 
     def _emit_resource(self) -> None:
         dc = self._data_logger

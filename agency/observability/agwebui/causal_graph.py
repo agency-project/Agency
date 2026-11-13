@@ -170,7 +170,7 @@ def build_graph(run, *, max_unmeasured_tools=None):
 
     def edge(source, target, kind, evidence, *, confidence="verified", blocking=True, weight=0):
         if source not in nodes or target not in nodes or source == target:
-            return
+            return None
         left, right = nodes[source]["time"], nodes[target]["time"]
         if finite(left) and finite(right) and left > right + 1e-6:
             confidence, blocking = "unknown", False

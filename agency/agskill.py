@@ -106,26 +106,25 @@ def _coerce_submitted_value(hint, value):
     to what the field hint actually is -- a value already of the right
     type (or one that fails to parse) passes through unchanged, so
     check_field still reports a real mismatch as an error."""
-    if not isinstance(value, str) or not isinstance(hint, type):
-        return value
-    if issubclass(hint, bool):
-        low = value.strip().lower()
-        if low in ("true", "1"):
-            return True
-        if low in ("false", "0"):
-            return False
-        return value
-    if issubclass(hint, int):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return value
-    if issubclass(hint, float):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return value
-    return value
+    output = value
+    if isinstance(value, str) and isinstance(hint, type):
+        if issubclass(hint, bool):
+            low = value.strip().lower()
+            if low in ("true", "1"):
+                output = True
+            elif low in ("false", "0"):
+                output = False
+        elif issubclass(hint, int):
+            try:
+                output = int(value.strip())
+            except ValueError:
+                output = value
+        elif issubclass(hint, float):
+            try:
+                output = float(value.strip())
+            except ValueError:
+                output = value
+    return output
 
 
 def _submit_output(arg: agdata, output_schema, submitted_output_store: dict) -> agdata:

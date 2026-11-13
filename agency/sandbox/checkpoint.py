@@ -521,8 +521,7 @@ class ZfsRuntimeStorage:
             # removes the container.  Marking this unprepared here makes
             # _run() reject the subsequent `docker rm`, leaking the live
             # container and its writable dataset.
-            return
-        if self.created:
+        elif self.created:
             # The generated dataset is private; no shared runtime store is removed.
             # Runtime teardown and short-lived host readers can retain a VFS
             # reference briefly after the container's mounts disappear. Retry

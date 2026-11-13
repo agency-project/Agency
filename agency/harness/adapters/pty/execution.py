@@ -220,67 +220,73 @@ class PtyExecution:
 
     def redirect(self, text):
         with self._lock:
-            if not self._active or self.handle.is_paused():
-                return False
-            self._poll()
-            if self._stop is not None:
-                return False
-            try:
-                self.validate_prompt(text)
-            except ValueError:
-                return False
-            try:
-                self._check_alive()
-                self._interrupted = False
-                self.driver.begin_interrupt(self.handle)
-                self.handle.write_terminal(self.driver.interrupt_key)
-                if self.driver.confirm_interrupt:
-                    self._wait_until(
-                        lambda: (
-                            self.driver.interrupt_pending(self.handle) or self._stop is not None
-                        ),
-                        "native interrupt confirmation",
-                    )
-                    if self._stop is not None:
-                        return False
-                    self.handle.write_terminal(self.driver.interrupt_key)
-                self._wait_until(
-                    lambda: (
-                        self._interrupted
-                        or self._stop is not None
-                        or self.driver.interrupted(self.handle)
-                    ),
-                    "native interruption",
-                )
-                if self._stop is not None:
-                    return False
-                self.driver.clear_input(self.handle, self._wait_until)
-                self._wait_until(lambda: self.driver.ready(self.handle), "empty native input")
-                self._submit(text, "redirect")
-                return True
-            except (OSError, RuntimeError) as exc:
-                self._failure = str(exc)
-                self._active = False
-                # Reap before reporting failure: a queued fallback must not race
-                # a partially accepted redirect in a still-running CLI.
-                self.driver.reap(self.handle)
-                return False
+            output = False
+            if self._active and not self.handle.is_paused():
+                self._poll()
+                if self._stop is None:
+                    try:
+                        self.validate_prompt(text)
+                    except ValueError:
+                        output = False
+                    else:
+                        try:
+                            self._check_alive()
+                            self._interrupted = False
+                            self.driver.begin_interrupt(self.handle)
+                            self.handle.write_terminal(self.driver.interrupt_key)
+                            proceed = True
+                            if self.driver.confirm_interrupt:
+                                self._wait_until(
+                                    lambda: (
+                                        self.driver.interrupt_pending(self.handle)
+                                        or self._stop is not None
+                                    ),
+                                    "native interrupt confirmation",
+                                )
+                                if self._stop is not None:
+                                    proceed = False
+                                else:
+                                    self.handle.write_terminal(self.driver.interrupt_key)
+                            if proceed:
+                                self._wait_until(
+                                    lambda: (
+                                        self._interrupted
+                                        or self._stop is not None
+                                        or self.driver.interrupted(self.handle)
+                                    ),
+                                    "native interruption",
+                                )
+                                if self._stop is None:
+                                    self.driver.clear_input(self.handle, self._wait_until)
+                                    self._wait_until(
+                                        lambda: self.driver.ready(self.handle),
+                                        "empty native input",
+                                    )
+                                    self._submit(text, "redirect")
+                                    output = True
+                        except (OSError, RuntimeError) as exc:
+                            self._failure = str(exc)
+                            self._active = False
+                            # Reap before reporting failure: a queued fallback must not race
+                            # a partially accepted redirect in a still-running CLI.
+                            self.driver.reap(self.handle)
+                            output = False
+        return output
 
     def close(self):
         from ...agharness import cleanup_config_home
 
         with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._active = False
-            try:
-                if self.handle is not None:
-                    self.handle.close()
-            finally:
-                for callback in reversed(self._cleanup_callbacks):
-                    callback()
-                cleanup_config_home(self.driver.root)
+            if not self._closed:
+                self._closed = True
+                self._active = False
+                try:
+                    if self.handle is not None:
+                        self.handle.close()
+                finally:
+                    for callback in reversed(self._cleanup_callbacks):
+                        callback()
+                    cleanup_config_home(self.driver.root)
 
     def prepare_fast_checkpoint(self):
         with self._lock:

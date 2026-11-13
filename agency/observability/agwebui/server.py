@@ -143,111 +143,120 @@ def _trajectory_execution_command(source, message):
     result = {"type": "execution_command_result", "id": message.get("id")}
     controls = _execution_controls(source)
     command = message.get("command")
+    error = None
     if not isinstance(command, str) or (
         message.get("agname") is not None and not isinstance(message["agname"], str)
     ):
-        return {**result, "error": "Command and agent identifiers must be strings."}
-    if not controls["available"]:
-        return {**result, "error": "No active execution command bridge is available."}
-    if (
+        error = "Command and agent identifiers must be strings."
+    elif not controls["available"]:
+        error = "No active execution command bridge is available."
+    elif (
         message.get("relay_id") != controls["relay_id"]
         or message.get("execution") != controls["execution"]
     ):
-        return {
-            **result,
-            "error": "Execution changed; reopen the current live controls before submitting.",
-        }
-    identifier = message.get("id")
-    if not isinstance(identifier, str) or not identifier or len(identifier) > 128:
-        return {**result, "error": "A nonblank command ID of at most 128 characters is required."}
-    if command not in {
-        "pause",
-        "resume",
-        "pause_all",
-        "resume_all",
-        "stop",
-        "kill",
-        "stop_all",
-        "kill_all",
-        "queue_message",
-        "redirect",
-        "run",
-    }:
-        return {**result, "error": "Unsupported execution command."}
-    capabilities = controls["capabilities"].get(message.get("agname"), {})
-    if (
-        command in {"pause", "resume", "stop", "kill"}
-        and message.get("agname") not in controls["agents"]
-    ):
-        return {**result, "error": "The selected agent is no longer active."}
-    if command in {"queue_message", "redirect", "run"} and not capabilities:
-        return {**result, "error": "The selected agent is unavailable to this execution process."}
-    if command in {"queue_message", "redirect"}:
-        content = message.get("message")
-        if not isinstance(content, str) or not content.strip() or len(content) > 32000:
-            return {**result, "error": "Message must contain 1–32000 characters."}
-        if command == "queue_message" and not capabilities.get("queue_message"):
-            return {**result, "error": "Retained-context messages are unsupported for this target."}
-        if command == "redirect" and message.get("invocation") not in capabilities.get(
-            "redirect", []
-        ):
-            return {**result, "error": "This target has no currently redirectable invocation."}
-    if command == "run":
-        if not isinstance(message.get("task"), str):
-            return {**result, "error": "Task identifier must be a string."}
-        if message.get("task") not in {task["id"] for task in capabilities.get("run", [])}:
-            return {**result, "error": "Task is not registered for this profiler session."}
-        if not isinstance(message.get("input"), dict) or len(json.dumps(message["input"])) > 32000:
-            return {
+        error = "Execution changed; reopen the current live controls before submitting."
+    else:
+        identifier = message.get("id")
+        if not isinstance(identifier, str) or not identifier or len(identifier) > 128:
+            error = "A nonblank command ID of at most 128 characters is required."
+        elif command not in {
+            "pause",
+            "resume",
+            "pause_all",
+            "resume_all",
+            "stop",
+            "kill",
+            "stop_all",
+            "kill_all",
+            "queue_message",
+            "redirect",
+            "run",
+        }:
+            error = "Unsupported execution command."
+        else:
+            capabilities = controls["capabilities"].get(message.get("agname"), {})
+            if (
+                command in {"pause", "resume", "stop", "kill"}
+                and message.get("agname") not in controls["agents"]
+            ):
+                error = "The selected agent is no longer active."
+            elif command in {"queue_message", "redirect", "run"} and not capabilities:
+                error = "The selected agent is unavailable to this execution process."
+            elif command in {"queue_message", "redirect"}:
+                content = message.get("message")
+                if not isinstance(content, str) or not content.strip() or len(content) > 32000:
+                    error = "Message must contain 1–32000 characters."
+                elif command == "queue_message" and not capabilities.get("queue_message"):
+                    error = "Retained-context messages are unsupported for this target."
+                elif command == "redirect" and message.get("invocation") not in capabilities.get(
+                    "redirect", []
+                ):
+                    error = "This target has no currently redirectable invocation."
+            elif command == "run":
+                if not isinstance(message.get("task"), str):
+                    error = "Task identifier must be a string."
+                elif message.get("task") not in {
+                    task["id"] for task in capabilities.get("run", [])
+                }:
+                    error = "Task is not registered for this profiler session."
+                elif (
+                    not isinstance(message.get("input"), dict)
+                    or len(json.dumps(message["input"])) > 32000
+                ):
+                    error = "Task input must be a JSON object of at most 32000 characters."
+    if error is None:
+        targets = list(controls["agents"]) if command.endswith("_all") else [message.get("agname")]
+        if "targets" in message and message["targets"] != targets:
+            output = {
                 **result,
-                "error": "Task input must be a JSON object of at most 32000 characters.",
+                "error": "Agent scope changed; review the current targets before submitting.",
             }
-    targets = list(controls["agents"]) if command.endswith("_all") else [message.get("agname")]
-    if "targets" in message and message["targets"] != targets:
-        return {
-            **result,
-            "error": "Agent scope changed; review the current targets before submitting.",
-        }
-    if not targets:
-        return {**result, "error": "No active agents are available."}
-    queued = {
-        "id": identifier,
-        "type": command,
-        "agname": message.get("agname"),
-        "targets": targets,
-        "relay_id": controls["relay_id"],
-        "execution": controls["execution"],
-    }
-    for field in ("message", "invocation", "task", "input"):
-        if field in message:
-            queued[field] = message[field]
-    signature = json.dumps(queued, sort_keys=True)
-    key = (controls["relay_id"], identifier)
-    try:
-        with _command_lock:
-            if key in _command_ids:
-                if _command_ids[key] != signature:
-                    return {
-                        **result,
-                        "error": "Command ID was already used for a different request.",
-                    }
-                return {
-                    **result,
-                    "queued": True,
-                    "state": "queued",
-                    "duplicate": True,
-                    "targets": targets,
-                }
-            if len(_command_ids) >= 2000:
-                return {
-                    **result,
-                    "error": "This server reached its command limit; no request was submitted.",
-                }
-            _queue_command(queued)
-            _command_ids[key] = signature
-    except OSError:
-        return {**result, "error": "Could not deliver the execution command."}
-    return {**result, "queued": True, "state": "queued", "targets": targets}
+        elif not targets:
+            output = {**result, "error": "No active agents are available."}
+        else:
+            queued = {
+                "id": identifier,
+                "type": command,
+                "agname": message.get("agname"),
+                "targets": targets,
+                "relay_id": controls["relay_id"],
+                "execution": controls["execution"],
+            }
+            for field in ("message", "invocation", "task", "input"):
+                if field in message:
+                    queued[field] = message[field]
+            signature = json.dumps(queued, sort_keys=True)
+            key = (controls["relay_id"], identifier)
+            try:
+                with _command_lock:
+                    if key in _command_ids:
+                        if _command_ids[key] != signature:
+                            output = {
+                                **result,
+                                "error": "Command ID was already used for a different request.",
+                            }
+                        else:
+                            output = {
+                                **result,
+                                "queued": True,
+                                "state": "queued",
+                                "duplicate": True,
+                                "targets": targets,
+                            }
+                    elif len(_command_ids) >= 2000:
+                        output = {
+                            **result,
+                            "error": "This server reached its command limit; no request was submitted.",
+                        }
+                    else:
+                        _queue_command(queued)
+                        _command_ids[key] = signature
+                        output = {**result, "queued": True, "state": "queued", "targets": targets}
+            except OSError:
+                output = {**result, "error": "Could not deliver the execution command."}
+    else:
+        output = {**result, "error": error}
+    return output
 
 
 def _trajectory_measurement_command(source, message):
@@ -401,30 +410,32 @@ _SCHEDULER_TAG_COLOR = "#ffffff"
 def _synthesize_term_message(event_type: str, name: "str | None", payload: dict) -> "str | None":
     skill = payload.get("skill")
     if event_type == "scheduler_started":
-        return (
+        output = (
             f"[scheduler] STARTED  max_concurrent_engines={payload.get('max_concurrent_engines')}"
         )
-    if event_type == "scheduler_stopped":
-        return "[scheduler] STOPPED"
-    if event_type == "request_submitted":
-        return f"[scheduler] {name}  REQUEST ▶  submitted   {skill}"
-    if event_type == "request_blocked":
-        return f"[scheduler] {name}  REQUEST ⏸  blocked     {skill}"
-    if event_type == "request_ready":
-        return f"[scheduler] {name}  REQUEST ▶  ready       {skill}"
-    if event_type == "request_started":
-        return f"[scheduler] {name}  REQUEST ▶  started     {skill}"
-    if event_type == "request_completed":
-        return f"[scheduler] {name}  REQUEST ✓  completed   {skill}"
-    if event_type == "request_failed":
-        return f"[scheduler] {name}  REQUEST ✗  failed      {skill}"
-    if event_type == "request_cancelled":
-        return f"[scheduler] {name}  REQUEST ⊘  cancelled   {skill}"
-    if event_type == "request_destroyed":
-        return f"[scheduler] {name}  REQUEST ⊘  destroyed   {skill}"
-    if event_type == "team_registered":
-        return f"[{name}] TEAM REGISTERED  agents={payload.get('agents')}"
-    return None
+    elif event_type == "scheduler_stopped":
+        output = "[scheduler] STOPPED"
+    elif event_type == "request_submitted":
+        output = f"[scheduler] {name}  REQUEST ▶  submitted   {skill}"
+    elif event_type == "request_blocked":
+        output = f"[scheduler] {name}  REQUEST ⏸  blocked     {skill}"
+    elif event_type == "request_ready":
+        output = f"[scheduler] {name}  REQUEST ▶  ready       {skill}"
+    elif event_type == "request_started":
+        output = f"[scheduler] {name}  REQUEST ▶  started     {skill}"
+    elif event_type == "request_completed":
+        output = f"[scheduler] {name}  REQUEST ✓  completed   {skill}"
+    elif event_type == "request_failed":
+        output = f"[scheduler] {name}  REQUEST ✗  failed      {skill}"
+    elif event_type == "request_cancelled":
+        output = f"[scheduler] {name}  REQUEST ⊘  cancelled   {skill}"
+    elif event_type == "request_destroyed":
+        output = f"[scheduler] {name}  REQUEST ⊘  destroyed   {skill}"
+    elif event_type == "team_registered":
+        output = f"[{name}] TEAM REGISTERED  agents={payload.get('agents')}"
+    else:
+        output = None
+    return output
 
 
 _TERM_MESSAGE_DISPLAY_MAX_CHARS = 300

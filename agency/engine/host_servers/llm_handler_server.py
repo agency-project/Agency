@@ -268,20 +268,21 @@ class _StreamHandle:
             self._close_stream()
 
     def _close_stream(self) -> None:
+        stream = None
         with self._stream_ref_lock:
-            if self._stream_closed or self._stream_ref is None:
-                return
-            self._stream_closed = True
-            stream = self._stream_ref
-        try:
-            stream.close()
-        except BaseException:
-            # A failed close must remain retryable. In particular, stop()
-            # retains the handle after a timeout and may call cancel again.
-            with self._stream_ref_lock:
-                if self._stream_ref is stream:
-                    self._stream_closed = False
-            raise
+            if not (self._stream_closed or self._stream_ref is None):
+                self._stream_closed = True
+                stream = self._stream_ref
+        if stream is not None:
+            try:
+                stream.close()
+            except BaseException:
+                # A failed close must remain retryable. In particular, stop()
+                # retains the handle after a timeout and may call cancel again.
+                with self._stream_ref_lock:
+                    if self._stream_ref is stream:
+                        self._stream_closed = False
+                raise
 
     def first(self) -> dict:
         with self._queue_condition:
@@ -1288,6 +1289,7 @@ class LlmHandlerServer:
                     **agprof.detail_metadata("llm.messages", request.get("messages", [])),
                 )
                 t0 = time.perf_counter()
+                output = None
                 try:
                     stream_iter = iter(
                         backend.dispatch_stream(request, on_client=handle._set_stream_ref)
@@ -1298,25 +1300,26 @@ class LlmHandlerServer:
                     _annotate(attempt_span, **_response_profile_metadata(empty_message, None, None))
                     if policy.fail_on_empty:
                         _annotate(attempt_span, outcome="retry", retry_reason=EMPTY)
-                        return ("retry", EMPTY, "provider stream carried no events", None)
-                    _annotate(attempt_span, outcome="success")
-                    enqueued = handle.register_stream_exchange(
-                        {
-                            "type": "done",
-                            "message": empty_message,
-                            "usage": None,
-                            "stop_reason": None,
-                        },
-                        request=request,
-                        response=empty_message,
-                        streaming=False,
-                        **entry_fields,
-                    )
-                    if not enqueued:
-                        finalize_cancelled()
-                        return ("stop",)
-                    finalize_success(empty_message)
-                    return ("stop",)
+                        output = ("retry", EMPTY, "provider stream carried no events", None)
+                    else:
+                        _annotate(attempt_span, outcome="success")
+                        enqueued = handle.register_stream_exchange(
+                            {
+                                "type": "done",
+                                "message": empty_message,
+                                "usage": None,
+                                "stop_reason": None,
+                            },
+                            request=request,
+                            response=empty_message,
+                            streaming=False,
+                            **entry_fields,
+                        )
+                        if not enqueued:
+                            finalize_cancelled()
+                        else:
+                            finalize_success(empty_message)
+                        output = ("stop",)
                 except BaseException as e:
                     # A producer thread must always publish a first terminal
                     # item. Otherwise the synchronous route remains blocked in
@@ -1324,141 +1327,161 @@ class LlmHandlerServer:
                     _annotate(attempt_span, outcome="failure", error_type=type(e).__name__)
                     if handle._cancel_event.is_set():
                         finalize_cancelled()
-                        return ("stop",)
-                    if isinstance(e, UnusableResponseError) and _retry_in_place(e):
+                        output = ("stop",)
+                    elif isinstance(e, UnusableResponseError) and _retry_in_place(e):
                         # The provider answered and the answer was unusable;
                         # a transport failure before any answer is left to the
                         # SDK's own retries and to the harness.
-                        return ("retry", e.reason, f"{type(e).__name__}: {e}", e)
-                    classified = _classify_dispatch_exception(e)
-                    status_code, transient = classified if classified is not None else (500, False)
-                    publish_error(e, status_code=status_code, transient=transient)
-                    return ("stop",)
-                ttft_ms = round((time.perf_counter() - t0) * 1000, 3)
-                _annotate(attempt_span, ttft_ms=ttft_ms)
+                        output = ("retry", e.reason, f"{type(e).__name__}: {e}", e)
+                    else:
+                        classified = _classify_dispatch_exception(e)
+                        status_code, transient = (
+                            classified if classified is not None else (500, False)
+                        )
+                        publish_error(e, status_code=status_code, transient=transient)
+                        output = ("stop",)
+                if output is None:
+                    ttft_ms = round((time.perf_counter() - t0) * 1000, 3)
+                    _annotate(attempt_span, ttft_ms=ttft_ms)
 
-                handle.register_stream_exchange(
-                    request=request, response={"role": "assistant", "blocks": []}, **entry_fields
-                )
-                blocks: "dict[int, dict]" = {}
-                usage = None
-                stop_reason = None
-                try:
-                    for stream_item in itertools.chain([first_item], stream_iter):
+                    handle.register_stream_exchange(
+                        request=request,
+                        response={"role": "assistant", "blocks": []},
+                        **entry_fields,
+                    )
+                    blocks: "dict[int, dict]" = {}
+                    usage = None
+                    stop_reason = None
+                    try:
+                        for stream_item in itertools.chain([first_item], stream_iter):
+                            if handle._cancel_event.is_set():
+                                break
+                            self._data_logger.record_stream_delta(
+                                type="llm_stream_delta",
+                                payload=stream_item,
+                                call_label=handle.call_label,
+                            )
+                            if stream_item["type"] == "usage":
+                                if stream_item.get("usage") is not None:
+                                    usage = stream_item["usage"]
+                                if stream_item.get("stop_reason") is not None:
+                                    stop_reason = stream_item["stop_reason"]
+                                continue
+                            idx = stream_item["index"]
+                            now = time.time()
+                            block = blocks.setdefault(
+                                idx,
+                                {
+                                    "type": stream_item["block_type"],
+                                    "text": "",
+                                    "signature": "",
+                                    "id": "",
+                                    "name": "",
+                                    "arguments": "",
+                                    "data": None,
+                                    "citations": None,
+                                    "ts_start": now,
+                                },
+                            )
+                            text_piece = stream_item.get("text") or ""
+                            if text_piece:
+                                block["text"] += text_piece
+                            citations_piece = stream_item.get("citations")
+                            if citations_piece:
+                                if block["citations"] is None:
+                                    block["citations"] = []
+                                block["citations"].extend(citations_piece)
+                            sig_piece = stream_item.get("signature") or ""
+                            if sig_piece:
+                                block["signature"] += sig_piece
+                            if stream_item.get("id"):
+                                block["id"] = stream_item["id"]
+                            name_piece = stream_item.get("name") or ""
+                            if name_piece:
+                                block["name"] += name_piece
+                            args_piece = stream_item.get("arguments") or ""
+                            if args_piece:
+                                block["arguments"] += args_piece
+                            if stream_item.get("data") is not None:
+                                if block["data"] is None:
+                                    block["data"] = []
+                                block["data"].append(stream_item["data"])
+                            if stream_item.get("phase"):
+                                block["phase"] = stream_item["phase"]
+                            block["ts_end"] = now
+                            message = _blocks_to_message(blocks)
+                            handle.register_stream_exchange(response=message)
+                    except BaseException as e:
+                        partial = _blocks_to_message(blocks)
+                        _annotate(
+                            attempt_span,
+                            outcome="failure",
+                            error_type=type(e).__name__,
+                            **_response_profile_metadata(partial, usage, stop_reason),
+                        )
                         if handle._cancel_event.is_set():
-                            break
-                        self._data_logger.record_stream_delta(
-                            type="llm_stream_delta",
-                            payload=stream_item,
-                            call_label=handle.call_label,
-                        )
-                        if stream_item["type"] == "usage":
-                            if stream_item.get("usage") is not None:
-                                usage = stream_item["usage"]
-                            if stream_item.get("stop_reason") is not None:
-                                stop_reason = stream_item["stop_reason"]
-                            continue
-                        idx = stream_item["index"]
-                        now = time.time()
-                        block = blocks.setdefault(
-                            idx,
-                            {
-                                "type": stream_item["block_type"],
-                                "text": "",
-                                "signature": "",
-                                "id": "",
-                                "name": "",
-                                "arguments": "",
-                                "data": None,
-                                "citations": None,
-                                "ts_start": now,
-                            },
-                        )
-                        text_piece = stream_item.get("text") or ""
-                        if text_piece:
-                            block["text"] += text_piece
-                        citations_piece = stream_item.get("citations")
-                        if citations_piece:
-                            if block["citations"] is None:
-                                block["citations"] = []
-                            block["citations"].extend(citations_piece)
-                        sig_piece = stream_item.get("signature") or ""
-                        if sig_piece:
-                            block["signature"] += sig_piece
-                        if stream_item.get("id"):
-                            block["id"] = stream_item["id"]
-                        name_piece = stream_item.get("name") or ""
-                        if name_piece:
-                            block["name"] += name_piece
-                        args_piece = stream_item.get("arguments") or ""
-                        if args_piece:
-                            block["arguments"] += args_piece
-                        if stream_item.get("data") is not None:
-                            if block["data"] is None:
-                                block["data"] = []
-                            block["data"].append(stream_item["data"])
-                        if stream_item.get("phase"):
-                            block["phase"] = stream_item["phase"]
-                        block["ts_end"] = now
-                        message = _blocks_to_message(blocks)
-                        handle.register_stream_exchange(response=message)
-                except BaseException as e:
-                    partial = _blocks_to_message(blocks)
-                    _annotate(
-                        attempt_span,
-                        outcome="failure",
-                        error_type=type(e).__name__,
-                        **_response_profile_metadata(partial, usage, stop_reason),
-                    )
-                    if handle._cancel_event.is_set():
-                        finalize_cancelled()
-                        return ("stop",)
-                    if _retry_in_place(e):
-                        if not getattr(e, "response_ids", None):
-                            with suppress(Exception):
-                                e.response_ids = _response_ids_of(partial)
-                        return (
-                            "retry",
-                            getattr(e, "reason", "stream_interrupted"),
-                            f"{type(e).__name__}: {e}",
-                            e,
-                        )
-                    classified = _classify_dispatch_exception(e)
-                    status_code, transient = classified if classified is not None else (500, False)
-                    publish_error(
-                        e,
-                        status_code=status_code,
-                        transient=transient,
-                        streaming=False,
-                        error=f"{type(e).__name__}: {e}",
-                    )
-                    return ("stop",)
+                            finalize_cancelled()
+                            output = ("stop",)
+                        elif _retry_in_place(e):
+                            if not getattr(e, "response_ids", None):
+                                with suppress(Exception):
+                                    e.response_ids = _response_ids_of(partial)
+                            output = (
+                                "retry",
+                                getattr(e, "reason", "stream_interrupted"),
+                                f"{type(e).__name__}: {e}",
+                                e,
+                            )
+                        else:
+                            classified = _classify_dispatch_exception(e)
+                            status_code, transient = (
+                                classified if classified is not None else (500, False)
+                            )
+                            publish_error(
+                                e,
+                                status_code=status_code,
+                                transient=transient,
+                                streaming=False,
+                                error=f"{type(e).__name__}: {e}",
+                            )
+                            output = ("stop",)
 
-                if handle._cancel_event.is_set():
-                    finalize_cancelled()
-                    return ("stop",)
-                message = _blocks_to_message(blocks)
-                verdict = inspect_response(
-                    message,
-                    stop_reason,
-                    empty_is_unusable=(
-                        policy.fail_on_empty
-                        and not self._can_finish_empty(stop_reason, internal_kind)
-                    ),
-                )
-                _annotate(
-                    attempt_span,
-                    outcome="success" if verdict.usable else "unusable",
-                    **({} if verdict.usable else {"unusable_reason": verdict.reason}),
-                    **_response_profile_metadata(message, usage, stop_reason),
-                )
-                if verdict.usable:
-                    return ("ok", message, usage, stop_reason, ttft_ms, verdict)
-                if verdict.reason == TRUNCATED:
-                    return ("truncated", message, usage, stop_reason, ttft_ms, verdict)
-                cause = UnusableResponseError(verdict.reason, verdict.detail)
-                cause.response_ids = _response_ids_of(message)
-                return ("retry", verdict.reason, verdict.detail, cause)
+                    if output is None:
+                        if handle._cancel_event.is_set():
+                            finalize_cancelled()
+                            output = ("stop",)
+                        else:
+                            message = _blocks_to_message(blocks)
+                            verdict = inspect_response(
+                                message,
+                                stop_reason,
+                                empty_is_unusable=(
+                                    policy.fail_on_empty
+                                    and not self._can_finish_empty(stop_reason, internal_kind)
+                                ),
+                            )
+                            _annotate(
+                                attempt_span,
+                                outcome="success" if verdict.usable else "unusable",
+                                **({} if verdict.usable else {"unusable_reason": verdict.reason}),
+                                **_response_profile_metadata(message, usage, stop_reason),
+                            )
+                            if verdict.usable:
+                                output = ("ok", message, usage, stop_reason, ttft_ms, verdict)
+                            elif verdict.reason == TRUNCATED:
+                                output = (
+                                    "truncated",
+                                    message,
+                                    usage,
+                                    stop_reason,
+                                    ttft_ms,
+                                    verdict,
+                                )
+                            else:
+                                cause = UnusableResponseError(verdict.reason, verdict.detail)
+                                cause.response_ids = _response_ids_of(message)
+                                output = ("retry", verdict.reason, verdict.detail, cause)
+            return output
 
         def deliver(message, usage, stop_reason, ttft_ms) -> None:
             enqueued = handle.register_stream_exchange(

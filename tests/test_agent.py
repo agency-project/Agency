@@ -719,6 +719,27 @@ def test_agent_internal_sandbox_destroyed_only_after_agent_is_gone():
     assert destroyed == [True]
 
 
+def test_agent_alive_at_interpreter_exit_exits_cleanly():
+    """__del__ logs agent_exit at shutdown, when imports and sqlite may already be torn down."""
+    import sys
+
+    script = (
+        "from agency.agent import agent\n"
+        "from agency.configs.agconfig import agconfig, llmconfig\n"
+        'keep = agent(agconfig=agconfig(llmconfig(provider="mock", model="m")))\n'
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "AGENCY_PROFILE": "0"},
+    )
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    assert "Exception ignored" not in result.stderr
+
+
 def test_external_sandbox_survives_agent_deletion_while_still_referenced():
     """A caller-provided sandbox shared beyond the agent must outlive that
     agent's deletion — nothing in agent.__del__ should force-destroy it."""
@@ -1593,29 +1614,32 @@ def test_random_prepare_agtype_inputs_fuzz():
 
     def rand_value(hint):
         if hint is bool:
-            return rng.choice([True, False])
-        if hint is int:
-            return rng.randint(-9, 9)
-        if hint is float:
-            return round(rng.uniform(-9.0, 9.0), 1)
-        if hint is str:
-            return rng.choice(["hello", "world"])
-        if hint is agimage:
-            return f"https://example.com/img{rng.randint(0, 9)}.jpg"
-        if hint is agfile:
-            return rng.choice(["some text", "more text"])
-        if hint is agbinary:
-            return b"raw bytes"
-        if hint is agrawstring:
-            return rng.choice(["raw", "text"])
-        origin, args = get_origin(hint), get_args(hint)
-        if origin is list:
-            return [rand_value(args[0]) for _ in range(rng.randint(1, 3))]
-        if origin is dict:
-            return {f"k{i}": rand_value(args[1]) for i in range(rng.randint(1, 3))}
-        if origin is tuple:
-            return [rand_value(t) for t in args]
-        return None
+            output = rng.choice([True, False])
+        elif hint is int:
+            output = rng.randint(-9, 9)
+        elif hint is float:
+            output = round(rng.uniform(-9.0, 9.0), 1)
+        elif hint is str:
+            output = rng.choice(["hello", "world"])
+        elif hint is agimage:
+            output = f"https://example.com/img{rng.randint(0, 9)}.jpg"
+        elif hint is agfile:
+            output = rng.choice(["some text", "more text"])
+        elif hint is agbinary:
+            output = b"raw bytes"
+        elif hint is agrawstring:
+            output = rng.choice(["raw", "text"])
+        else:
+            origin, args = get_origin(hint), get_args(hint)
+            if origin is list:
+                output = [rand_value(args[0]) for _ in range(rng.randint(1, 3))]
+            elif origin is dict:
+                output = {f"k{i}": rand_value(args[1]) for i in range(rng.randint(1, 3))}
+            elif origin is tuple:
+                output = [rand_value(t) for t in args]
+            else:
+                output = None
+        return output
 
     def count_leaves(hint, value, *leaf_types):
         """Count how many values at agtype leaf positions match leaf_types."""

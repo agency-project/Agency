@@ -942,20 +942,19 @@ class _ChrootBackend(agsandbox_backend):
         self._materialize_workspace(tag)
 
     def destroy(self) -> None:
-        if self._destroyed:
-            return
-        # rm_container() kills tracked processes, releases the GPU, and
-        # deletes the workspace (all idempotent -- a no-op if a prior
-        # stop()/rm_container() already did them) before the root rmtree
-        # below removes anything left over; safe to call unconditionally
-        # even though it duplicates that one step.
-        self.rm_container()
-        if self._root.exists():
-            shutil.rmtree(self._root, ignore_errors=True)
-        if self._checkpoint_image:
-            self.delete_image(self._checkpoint_image, force=True)
-            self._checkpoint_image = None
-        self._destroyed = True
+        if not self._destroyed:
+            # rm_container() kills tracked processes, releases the GPU, and
+            # deletes the workspace (all idempotent -- a no-op if a prior
+            # stop()/rm_container() already did them) before the root rmtree
+            # below removes anything left over; safe to call unconditionally
+            # even though it duplicates that one step.
+            self.rm_container()
+            if self._root.exists():
+                shutil.rmtree(self._root, ignore_errors=True)
+            if self._checkpoint_image:
+                self.delete_image(self._checkpoint_image, force=True)
+                self._checkpoint_image = None
+            self._destroyed = True
 
     # ------------------------------------------------------------------
     # Static helpers — snapshot-directory-level operations, the chroot

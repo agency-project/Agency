@@ -189,74 +189,80 @@ class ExecutionScheduler:
             if isinstance(current, agdata):
                 marker = id(current)
                 if marker in seen:
-                    return current
-                seen.add(marker)
-                future = object.__getattribute__(current, "_future")
-                if future is not None:
-                    if not future.done():
-                        raise RuntimeError(
-                            "scheduler dispatched a request with an unresolved dependency"
+                    output = current
+                else:
+                    seen.add(marker)
+                    future = object.__getattribute__(current, "_future")
+                    if future is not None:
+                        if not future.done():
+                            raise RuntimeError(
+                                "scheduler dispatched a request with an unresolved dependency"
+                            )
+                        resolved = future.result()
+                        if not isinstance(resolved, agdata):
+                            raise TypeError(
+                                "dependency future resolved to an incompatible value: "
+                                f"{type(resolved).__name__}"
+                            )
+                        if isinstance(resolved, agerror):
+                            raise RuntimeError(resolved.error)
+                        resolved = materialize(resolved)
+                        object.__setattr__(
+                            current,
+                            "_data",
+                            object.__getattribute__(resolved, "_data"),
                         )
-                    resolved = future.result()
-                    if not isinstance(resolved, agdata):
-                        raise TypeError(
-                            "dependency future resolved to an incompatible value: "
-                            f"{type(resolved).__name__}"
-                        )
-                    if isinstance(resolved, agerror):
-                        raise RuntimeError(resolved.error)
-                    resolved = materialize(resolved)
-                    object.__setattr__(
-                        current,
-                        "_data",
-                        object.__getattribute__(resolved, "_data"),
-                    )
-                    object.__setattr__(current, "_future", None)
-                data = object.__getattribute__(current, "_data")
-                for key, nested in list(data.items()):
-                    data[key] = materialize(nested)
-                return current
+                        object.__setattr__(current, "_future", None)
+                    data = object.__getattribute__(current, "_data")
+                    for key, nested in list(data.items()):
+                        data[key] = materialize(nested)
+                    output = current
             # Discovery accepts shared/cyclic containers. Visit mutable
             # containers once here too, preserving their object identity.
-            if isinstance(current, (dict, list)):
+            elif isinstance(current, (dict, list)):
                 marker = id(current)
                 if marker in seen:
-                    return current
-                seen.add(marker)
-            if isinstance(current, dict):
-                for key, nested in list(current.items()):
-                    current[key] = materialize(nested)
-                return current
-            if isinstance(current, list):
-                for index, nested in enumerate(current):
-                    current[index] = materialize(nested)
-                return current
-            if isinstance(current, tuple):
-                return tuple(materialize(nested) for nested in current)
-            if is_dataclass(current) and not isinstance(current, type):
+                    output = current
+                else:
+                    seen.add(marker)
+                    if isinstance(current, dict):
+                        for key, nested in list(current.items()):
+                            current[key] = materialize(nested)
+                    else:
+                        for index, nested in enumerate(current):
+                            current[index] = materialize(nested)
+                    output = current
+            elif isinstance(current, tuple):
+                output = tuple(materialize(nested) for nested in current)
+            elif is_dataclass(current) and not isinstance(current, type):
                 updates = {
                     field.name: materialize(getattr(current, field.name))
                     for field in fields(current)
                 }
-                return replace(current, **updates)
-            model_dump = getattr(current, "model_dump", None)
-            model_copy = getattr(current, "model_copy", None)
-            if callable(model_dump):
-                dumped = model_dump()
-                if not isinstance(dumped, dict):
-                    raise TypeError(
-                        f"{type(current).__name__}.model_dump() must return a dictionary"
-                    )
-                updates = {name: materialize(value) for name, value in dumped.items()}
-                if callable(model_copy):
-                    return model_copy(update=updates)
-                try:
-                    for name, value in updates.items():
-                        setattr(current, name, value)
-                except (AttributeError, TypeError):
-                    return updates
-                return current
-            return current
+                output = replace(current, **updates)
+            else:
+                model_dump = getattr(current, "model_dump", None)
+                model_copy = getattr(current, "model_copy", None)
+                if callable(model_dump):
+                    dumped = model_dump()
+                    if not isinstance(dumped, dict):
+                        raise TypeError(
+                            f"{type(current).__name__}.model_dump() must return a dictionary"
+                        )
+                    updates = {name: materialize(value) for name, value in dumped.items()}
+                    if callable(model_copy):
+                        output = model_copy(update=updates)
+                    else:
+                        try:
+                            for name, value in updates.items():
+                                setattr(current, name, value)
+                        except (AttributeError, TypeError):
+                            output = updates
+                        else:
+                            output = current
+                else:
+                    output = current
+            return output
 
         return materialize(value)
 
@@ -267,73 +273,81 @@ class ExecutionScheduler:
 
         def visit(current: object, *, from_future: bool = False) -> "str | None":
             if isinstance(current, agerror):
-                return current.error if from_future else None
-            if isinstance(current, agdata):
+                output = current.error if from_future else None
+            elif isinstance(current, agdata):
                 marker = id(current)
                 if marker in seen:
-                    return None
-                seen.add(marker)
-                future = object.__getattribute__(current, "_future")
-                identity = object.__getattribute__(current, "__dict__")
-                producer_id = identity.get("_execution_id")
-                producer = None
-                if producer_id is None and future is not None:
-                    producer_id = self._orchestrator._future_producers.get(future)
-                if producer_id is not None and sources is not None:
-                    producer = self._orchestrator._requests.get(producer_id)
-                    producer_agent = identity.get("_execution_agent")
-                    sources.append(
-                        {
-                            "request_id": producer_id,
-                            "agent_id": str(producer_agent.agname)
-                            if producer_agent is not None
-                            else str(producer.agent.agname)
-                            if producer is not None
-                            else None,
-                            "kind": "input",
-                            "evidence": "result_handle"
-                            if identity.get("_execution_id")
-                            else "registered_future",
-                        }
-                    )
-                if future is not None:
-                    if not future.done():
-                        found.add(future)
-                        return None
-                    if future.cancelled():
-                        return "dependency was cancelled"
-                    try:
-                        resolved = future.result()
-                    except BaseException as exc:
-                        return f"dependency failed: {format_exception(exc)}"
-                    return visit(resolved, from_future=True)
-                for nested in object.__getattribute__(current, "_data").values():
-                    failure = visit(nested)
-                    if failure is not None:
-                        return failure
-                return None
-            if isinstance(current, dict):
-                values = current.values()
-            elif isinstance(current, (list, tuple)):
-                values = current
-            elif is_dataclass(current) and not isinstance(current, type):
-                values = (getattr(current, field.name) for field in fields(current))
-            elif callable(model_dump := getattr(current, "model_dump", None)):
-                dumped = model_dump()
-                if not isinstance(dumped, dict):
-                    return f"{type(current).__name__}.model_dump() must return a dictionary"
-                values = dumped.values()
+                    output = None
+                else:
+                    seen.add(marker)
+                    future = object.__getattribute__(current, "_future")
+                    identity = object.__getattribute__(current, "__dict__")
+                    producer_id = identity.get("_execution_id")
+                    producer = None
+                    if producer_id is None and future is not None:
+                        producer_id = self._orchestrator._future_producers.get(future)
+                    if producer_id is not None and sources is not None:
+                        producer = self._orchestrator._requests.get(producer_id)
+                        producer_agent = identity.get("_execution_agent")
+                        sources.append(
+                            {
+                                "request_id": producer_id,
+                                "agent_id": str(producer_agent.agname)
+                                if producer_agent is not None
+                                else str(producer.agent.agname)
+                                if producer is not None
+                                else None,
+                                "kind": "input",
+                                "evidence": "result_handle"
+                                if identity.get("_execution_id")
+                                else "registered_future",
+                            }
+                        )
+                    if future is not None:
+                        if not future.done():
+                            found.add(future)
+                            output = None
+                        elif future.cancelled():
+                            output = "dependency was cancelled"
+                        else:
+                            try:
+                                resolved = future.result()
+                            except BaseException as exc:
+                                output = f"dependency failed: {format_exception(exc)}"
+                            else:
+                                output = visit(resolved, from_future=True)
+                    else:
+                        output = None
+                        for nested in object.__getattribute__(current, "_data").values():
+                            failure = visit(nested)
+                            if failure is not None:
+                                output = failure
+                                break
             else:
-                return None
-            marker = id(current)
-            if marker in seen:
-                return None
-            seen.add(marker)
-            for nested in values:
-                failure = visit(nested)
-                if failure is not None:
-                    return failure
-            return None
+                output = None
+                values = None
+                if isinstance(current, dict):
+                    values = current.values()
+                elif isinstance(current, (list, tuple)):
+                    values = current
+                elif is_dataclass(current) and not isinstance(current, type):
+                    values = (getattr(current, field.name) for field in fields(current))
+                elif callable(model_dump := getattr(current, "model_dump", None)):
+                    dumped = model_dump()
+                    if not isinstance(dumped, dict):
+                        output = f"{type(current).__name__}.model_dump() must return a dictionary"
+                    else:
+                        values = dumped.values()
+                if values is not None:
+                    marker = id(current)
+                    if marker not in seen:
+                        seen.add(marker)
+                        for nested in values:
+                            failure = visit(nested)
+                            if failure is not None:
+                                output = failure
+                                break
+            return output
 
         return visit(value)
 

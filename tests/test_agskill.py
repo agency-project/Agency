@@ -565,51 +565,57 @@ def test_random_nested_schema_roundtrip():
         return tuple[inners] if len(inners) > 1 else tuple[inners[0]]
 
     def rand_value(hint):
-        if hint is bool:
-            return rng.choice([True, False])
-        if hint is int:
-            return rng.randint(-9, 9)
-        if hint is float:
-            return round(rng.uniform(-9.0, 9.0), 1)
-        if hint is str or (isinstance(hint, type) and issubclass(hint, agtype)):
-            return rng.choice(["a", "bb", "ccc"])
         origin = get_origin(hint)
         args = get_args(hint)
-        if origin is list:
-            return [rand_value(args[0]) for _ in range(rng.randint(1, 4))]
-        if origin is dict:
-            return {f"k{i}": rand_value(args[1]) for i in range(rng.randint(1, 4))}
-        if origin is tuple:
+        if hint is bool:
+            output = rng.choice([True, False])
+        elif hint is int:
+            output = rng.randint(-9, 9)
+        elif hint is float:
+            output = round(rng.uniform(-9.0, 9.0), 1)
+        elif hint is str or (isinstance(hint, type) and issubclass(hint, agtype)):
+            output = rng.choice(["a", "bb", "ccc"])
+        elif origin is list:
+            output = [rand_value(args[0]) for _ in range(rng.randint(1, 4))]
+        elif origin is dict:
+            output = {f"k{i}": rand_value(args[1]) for i in range(rng.randint(1, 4))}
+        elif origin is tuple:
             # Serialise as list — JSON has no tuple type
-            return [rand_value(t) for t in args]
+            output = [rand_value(t) for t in args]
         # bare container types
-        if hint is list:
-            return [rng.randint(0, 5) for _ in range(rng.randint(1, 4))]
-        if hint is dict:
-            return {f"k{i}": rng.randint(0, 5) for i in range(rng.randint(1, 4))}
-        if hint is tuple:
-            return [rng.randint(0, 5) for _ in range(rng.randint(1, 4))]
-        return "?"
+        elif hint is list:
+            output = [rng.randint(0, 5) for _ in range(rng.randint(1, 4))]
+        elif hint is dict:
+            output = {f"k{i}": rng.randint(0, 5) for i in range(rng.randint(1, 4))}
+        elif hint is tuple:
+            output = [rng.randint(0, 5) for _ in range(rng.randint(1, 4))]
+        else:
+            output = "?"
+        return output
 
     def ground_truth_json_type(hint) -> str:
         if isinstance(hint, type):
             if issubclass(hint, bool):
-                return "boolean"
-            if issubclass(hint, int):
-                return "integer"
-            if issubclass(hint, float):
-                return "number"
-            if issubclass(hint, (list, tuple)):
-                return "array"
-            if issubclass(hint, dict):
-                return "object"
-            return "string"  # str and agtype subclasses
-        origin = get_origin(hint)
-        if origin in (list, tuple):
-            return "array"
-        if origin is dict:
-            return "object"
-        return "string"
+                output = "boolean"
+            elif issubclass(hint, int):
+                output = "integer"
+            elif issubclass(hint, float):
+                output = "number"
+            elif issubclass(hint, (list, tuple)):
+                output = "array"
+            elif issubclass(hint, dict):
+                output = "object"
+            else:
+                output = "string"  # str and agtype subclasses
+        else:
+            origin = get_origin(hint)
+            if origin in (list, tuple):
+                output = "array"
+            elif origin is dict:
+                output = "object"
+            else:
+                output = "string"
+        return output
 
     failures = []
     for trial in range(100):

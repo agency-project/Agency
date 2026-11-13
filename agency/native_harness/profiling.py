@@ -125,30 +125,29 @@ class NativeProfiler:
 
     def __exit__(self, *_exc):
         try:
-            if self.collector is None:
-                return
-            records = self.collector._disable_auto_functions()
-            self.dropped += self.collector._auto_dropped
-            deadline = time.monotonic() + 5.0
-            for start in range(0, len(records), 128):
-                if self.failed or time.monotonic() > deadline:
-                    self.dropped += len(records) - start
-                    break
-                self._report_samples(
-                    [
-                        {
-                            "name": r[2],
-                            "filename": r[3],
-                            "lineno": r[4],
-                            "perf_ns": r[5],
-                            "duration_ns": r[6],
-                            "tid": r[1],
-                            "outcome": r[7],
-                            "process_identity": self.process_identity,
-                        }
-                        for r in records[start : start + 128]
-                    ]
-                )
+            if self.collector is not None:
+                records = self.collector._disable_auto_functions()
+                self.dropped += self.collector._auto_dropped
+                deadline = time.monotonic() + 5.0
+                for start in range(0, len(records), 128):
+                    if self.failed or time.monotonic() > deadline:
+                        self.dropped += len(records) - start
+                        break
+                    self._report_samples(
+                        [
+                            {
+                                "name": r[2],
+                                "filename": r[3],
+                                "lineno": r[4],
+                                "perf_ns": r[5],
+                                "duration_ns": r[6],
+                                "tid": r[1],
+                                "outcome": r[7],
+                                "process_identity": self.process_identity,
+                            }
+                            for r in records[start : start + 128]
+                        ]
+                    )
         finally:
             self.bridge._profiler = None
 

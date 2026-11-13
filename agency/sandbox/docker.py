@@ -335,6 +335,7 @@ class _DockerBackend(_ContainerBackendBase):
         ending at the layer whose diff we want -- ChainID is a function of
         the whole prefix, not the tip DiffID alone.
         """
+        output = None
         chain_id = _chain_id_for_diff_ids(diff_ids)
         if chain_id is None:
             # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
@@ -344,124 +345,131 @@ class _DockerBackend(_ContainerBackendBase):
                 file=__import__("sys").stderr,
                 flush=True,
             )
-            return None
-        ctr = self._ctr_argv()
-        if ctr is None:
-            return None  # already warned in _ctr_argv()
-        view = f"agency-locate-{uuid.uuid4().hex}"
-        ctr_n = ctr + ["-n", "moby"]
-        try:
-            created = subprocess.run(
-                ctr_n + ["snapshots", "view", view, chain_id],
-                capture_output=True,
-                timeout=self._agconfig.sandbox.inspect_timeout_s,
-            )
-            if created.returncode != 0:
-                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-                print(
-                    f"[agsandbox_backend] WARNING: `ctr snapshots view` failed for "
-                    f"chain {chain_id}: "
-                    f"{created.stderr.decode('utf-8', errors='replace').strip()}",
-                    file=__import__("sys").stderr,
-                    flush=True,
-                )
-                return None
-            mounts = subprocess.run(
-                ctr_n + ["snapshots", "mounts", "/tmp/agency-ctr-unused", view],
-                capture_output=True,
-                text=True,
-                timeout=self._agconfig.sandbox.inspect_timeout_s,
-            )
-            if mounts.returncode != 0:
-                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-                print(
-                    f"[agsandbox_backend] WARNING: `ctr snapshots mounts` failed for "
-                    f"chain {chain_id}: {mounts.stderr.strip()}",
-                    file=__import__("sys").stderr,
-                    flush=True,
-                )
-                return None
-            diff_dir = _parse_ctr_mounts_top_fs(mounts.stdout or "")
-            if diff_dir is None:
-                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-                print(
-                    f"[agsandbox_backend] WARNING: could not parse a diff directory "
-                    f"out of `ctr snapshots mounts` output for chain {chain_id}: "
-                    f"{mounts.stdout!r}",
-                    file=__import__("sys").stderr,
-                    flush=True,
-                )
-                return None
-            # Rootful containerd creates snapshot dirs as 0700. When we
-            # reached ctr via sudo -n, also open this one snapshot for
-            # the current user so overlay_diff_to_tar can read it --
-            # scoped to diff_dir's parent (snapshots/<id>/), not the
-            # whole containerd tree.
-            if ctr[:2] == ["sudo", "-n"]:
+        else:
+            ctr = self._ctr_argv()
+            if ctr is None:
+                output = None  # already warned in _ctr_argv()
+            else:
+                view = f"agency-locate-{uuid.uuid4().hex}"
+                ctr_n = ctr + ["-n", "moby"]
                 try:
-                    subprocess.run(
-                        ["sudo", "-n", "chmod", "-R", "a+rX", str(diff_dir.parent)],
+                    created = subprocess.run(
+                        ctr_n + ["snapshots", "view", view, chain_id],
                         capture_output=True,
                         timeout=self._agconfig.sandbox.inspect_timeout_s,
                     )
+                    if created.returncode != 0:
+                        # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                        print(
+                            f"[agsandbox_backend] WARNING: `ctr snapshots view` failed for "
+                            f"chain {chain_id}: "
+                            f"{created.stderr.decode('utf-8', errors='replace').strip()}",
+                            file=__import__("sys").stderr,
+                            flush=True,
+                        )
+                    else:
+                        mounts = subprocess.run(
+                            ctr_n + ["snapshots", "mounts", "/tmp/agency-ctr-unused", view],
+                            capture_output=True,
+                            text=True,
+                            timeout=self._agconfig.sandbox.inspect_timeout_s,
+                        )
+                        if mounts.returncode != 0:
+                            # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                            print(
+                                f"[agsandbox_backend] WARNING: `ctr snapshots mounts` failed for "
+                                f"chain {chain_id}: {mounts.stderr.strip()}",
+                                file=__import__("sys").stderr,
+                                flush=True,
+                            )
+                        else:
+                            diff_dir = _parse_ctr_mounts_top_fs(mounts.stdout or "")
+                            if diff_dir is None:
+                                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                                print(
+                                    f"[agsandbox_backend] WARNING: could not parse a diff directory "
+                                    f"out of `ctr snapshots mounts` output for chain {chain_id}: "
+                                    f"{mounts.stdout!r}",
+                                    file=__import__("sys").stderr,
+                                    flush=True,
+                                )
+                            else:
+                                # Rootful containerd creates snapshot dirs as 0700. When we
+                                # reached ctr via sudo -n, also open this one snapshot for
+                                # the current user so overlay_diff_to_tar can read it --
+                                # scoped to diff_dir's parent (snapshots/<id>/), not the
+                                # whole containerd tree.
+                                if ctr[:2] == ["sudo", "-n"]:
+                                    try:
+                                        subprocess.run(
+                                            [
+                                                "sudo",
+                                                "-n",
+                                                "chmod",
+                                                "-R",
+                                                "a+rX",
+                                                str(diff_dir.parent),
+                                            ],
+                                            capture_output=True,
+                                            timeout=self._agconfig.sandbox.inspect_timeout_s,
+                                        )
+                                    except Exception as _e:
+                                        # Best-effort: fold will see an unreadable dir and
+                                        # degrade to None below rather than hard-failing.
+                                        # DATACOLLECTOR: append, agname=self._agname -- best-effort failure, low priority.
+                                        print(
+                                            f"[agsandbox_backend] WARNING: could not chmod "
+                                            f"containerd snapshot {diff_dir.parent} for fast squash: {_e}",
+                                            file=__import__("sys").stderr,
+                                            flush=True,
+                                        )
+                                try:
+                                    if not diff_dir.is_dir():
+                                        # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                                        print(
+                                            f"[agsandbox_backend] WARNING: containerd snapshot diff dir "
+                                            f"{diff_dir} does not exist -- fast squash unavailable for "
+                                            f"this cycle",
+                                            file=__import__("sys").stderr,
+                                            flush=True,
+                                        )
+                                    else:
+                                        next(diff_dir.iterdir(), None)
+                                        output = diff_dir
+                                except OSError as _e:
+                                    # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
+                                    print(
+                                        f"[agsandbox_backend] WARNING: containerd snapshot diff dir "
+                                        f"{diff_dir} is not readable: {_e}",
+                                        file=__import__("sys").stderr,
+                                        flush=True,
+                                    )
                 except Exception as _e:
-                    # Best-effort: fold will see an unreadable dir and
-                    # degrade to None below rather than hard-failing.
-                    # DATACOLLECTOR: append, agname=self._agname -- best-effort failure, low priority.
-                    print(
-                        f"[agsandbox_backend] WARNING: could not chmod "
-                        f"containerd snapshot {diff_dir.parent} for fast squash: {_e}",
-                        file=__import__("sys").stderr,
-                        flush=True,
-                    )
-            try:
-                if not diff_dir.is_dir():
+                    # Any unexpected ctr/mounts failure: fast path unavailable,
+                    # caller falls back to export/import.
                     # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
                     print(
-                        f"[agsandbox_backend] WARNING: containerd snapshot diff dir "
-                        f"{diff_dir} does not exist -- fast squash unavailable for "
-                        f"this cycle",
+                        f"[agsandbox_backend] WARNING: containerd overlayfs layer lookup failed: {_e}",
                         file=__import__("sys").stderr,
                         flush=True,
                     )
-                    return None
-                next(diff_dir.iterdir(), None)
-            except OSError as _e:
-                # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-                print(
-                    f"[agsandbox_backend] WARNING: containerd snapshot diff dir "
-                    f"{diff_dir} is not readable: {_e}",
-                    file=__import__("sys").stderr,
-                    flush=True,
-                )
-                return None
-            return diff_dir
-        except Exception as _e:
-            # Any unexpected ctr/mounts failure: fast path unavailable,
-            # caller falls back to export/import.
-            # DATACOLLECTOR: append, agname=self._agname -- fast-squash degrade warning for this cycle.
-            print(
-                f"[agsandbox_backend] WARNING: containerd overlayfs layer lookup failed: {_e}",
-                file=__import__("sys").stderr,
-                flush=True,
-            )
-            return None
-        finally:
-            try:
-                subprocess.run(
-                    ctr_n + ["snapshots", "rm", view],
-                    capture_output=True,
-                    timeout=self._agconfig.sandbox.inspect_timeout_s,
-                )
-            except Exception as _e:
-                # Best-effort cleanup of the temporary view snapshot.
-                # DATACOLLECTOR: append, agname=self._agname -- best-effort cleanup failure, low priority.
-                print(
-                    f"[agsandbox_backend] WARNING: could not remove temporary "
-                    f"ctr snapshot view {view}: {_e}",
-                    file=__import__("sys").stderr,
-                    flush=True,
-                )
+                finally:
+                    try:
+                        subprocess.run(
+                            ctr_n + ["snapshots", "rm", view],
+                            capture_output=True,
+                            timeout=self._agconfig.sandbox.inspect_timeout_s,
+                        )
+                    except Exception as _e:
+                        # Best-effort cleanup of the temporary view snapshot.
+                        # DATACOLLECTOR: append, agname=self._agname -- best-effort cleanup failure, low priority.
+                        print(
+                            f"[agsandbox_backend] WARNING: could not remove temporary "
+                            f"ctr snapshot view {view}: {_e}",
+                            file=__import__("sys").stderr,
+                            flush=True,
+                        )
+        return output
 
     def _locate_overlay2_layer_diff_dir(self, data_root: Path, diff_id: str) -> "Path | None":
         """Classic moby overlay2 graphdriver: layerdb `diff` → `cache-id`

@@ -545,48 +545,48 @@ class _TimedSpan:
         if self._interrupted:
             if self._scope is not None:
                 self._scope.__exit__(exc_type, exc_val, exc_tb)
-            return
-        t1 = time.perf_counter_ns()
-        otel_t1 = time.time_ns()
-        cpu1 = time.thread_time_ns()
-        rq1 = _read_schedstat()
-        runq = (rq1 - self._rq0) if (rq1 is not None and self._rq0 is not None) else None
-        metadata = dict(self._metadata)
-        metadata.setdefault("outcome", "failure" if exc_type is not None else "success")
-        if exc_type is not None:
-            metadata.setdefault("error_type", exc_type.__name__)
-        measurements = {
-            "agency.thread_id": self._tid,
-            "agency.perf_start_ns": self._t0,
-            "agency.wall_ns": t1 - self._t0,
-            "agency.cpu_ns": cpu1 - self._cpu0,
-        }
-        if runq is not None:
-            measurements["agency.runq_ns"] = runq
-        for key, value in {**metadata, **measurements}.items():
-            self._span.set_attribute(key, _otel_attribute(value))
-        if exc_val is not None:
-            self._span.record_exception(exc_val)
-        context = self._span.get_span_context()
-        parent = self._span.parent
-        attributes = {**metadata, **measurements}
-        span_id = context.span_id if context is not None else None
-        parent_span_id = parent.span_id if parent is not None else None
-        _record_data_logger_span(
-            self._name,
-            self._otel_t0,
-            otel_t1,
-            attributes,
-            cpu_ns=cpu1 - self._cpu0,
-            runqueue_ns=runq,
-            span_id=span_id,
-            parent_span_id=parent_span_id,
-            profile_session_id=self._profile_session_id,
-            profile_span_name=self._name,
-        )
-        self._span.end(end_time=otel_t1)
-        if self._scope is not None:
-            self._scope.__exit__(exc_type, exc_val, exc_tb)
+        else:
+            t1 = time.perf_counter_ns()
+            otel_t1 = time.time_ns()
+            cpu1 = time.thread_time_ns()
+            rq1 = _read_schedstat()
+            runq = (rq1 - self._rq0) if (rq1 is not None and self._rq0 is not None) else None
+            metadata = dict(self._metadata)
+            metadata.setdefault("outcome", "failure" if exc_type is not None else "success")
+            if exc_type is not None:
+                metadata.setdefault("error_type", exc_type.__name__)
+            measurements = {
+                "agency.thread_id": self._tid,
+                "agency.perf_start_ns": self._t0,
+                "agency.wall_ns": t1 - self._t0,
+                "agency.cpu_ns": cpu1 - self._cpu0,
+            }
+            if runq is not None:
+                measurements["agency.runq_ns"] = runq
+            for key, value in {**metadata, **measurements}.items():
+                self._span.set_attribute(key, _otel_attribute(value))
+            if exc_val is not None:
+                self._span.record_exception(exc_val)
+            context = self._span.get_span_context()
+            parent = self._span.parent
+            attributes = {**metadata, **measurements}
+            span_id = context.span_id if context is not None else None
+            parent_span_id = parent.span_id if parent is not None else None
+            _record_data_logger_span(
+                self._name,
+                self._otel_t0,
+                otel_t1,
+                attributes,
+                cpu_ns=cpu1 - self._cpu0,
+                runqueue_ns=runq,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                profile_session_id=self._profile_session_id,
+                profile_span_name=self._name,
+            )
+            self._span.end(end_time=otel_t1)
+            if self._scope is not None:
+                self._scope.__exit__(exc_type, exc_val, exc_tb)
 
     def interrupt(self, ended_perf_ns: int) -> None:
         """End this span in OTel while preserving incomplete-summary semantics."""
@@ -3605,10 +3605,10 @@ def _shutdown_process_profile() -> None:
     """Finalize process-scope traces exactly once."""
     global _process_shutdown_started
     with _process_shutdown_lock:
-        if _process_shutdown_started:
-            return
+        should_stop = not _process_shutdown_started
         _process_shutdown_started = True
-    stop()
+    if should_stop:
+        stop()
 
 
 def _install_process_profile_signal_handlers() -> None:

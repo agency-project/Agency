@@ -7,33 +7,31 @@ from pathlib import Path
 
 
 def validate_suggestion(value, evidence):
-    if not isinstance(value, dict) or not isinstance(value.get("evidence"), list):
-        return None
-    if not all(isinstance(item, str) for item in value["evidence"]) or set(
-        value["evidence"]
-    ) != set(evidence):
-        return None
-    label, summary = value.get("label"), value.get("summary", "")
-    if not isinstance(label, str) or not label.strip() or len(label) > 120:
-        return None
-    if not re.match(
-        r"^(Investigating|Inspecting|Attempting|Checking|Reviewing|Waiting|Preparing|Running)\b",
-        label,
-    ):
-        return None
-    if re.search(
-        r"\b(solved|resolved|verified|fixed|root cause|successful|successfully)\b", label, re.I
-    ):
-        return None
-    if not isinstance(summary, str) or len(summary) > 400:
-        return None
-    return {
-        "label": label,
-        "summary": summary,
-        "evidence": evidence,
-        "source": "optional LLM interpretation",
-        "grouping": "fixed actor / request / call membership",
-    }
+    output = None
+    if isinstance(value, dict) and isinstance(value.get("evidence"), list):
+        if all(isinstance(item, str) for item in value["evidence"]) and set(
+            value["evidence"]
+        ) == set(evidence):
+            label, summary = value.get("label"), value.get("summary", "")
+            if isinstance(label, str) and label.strip() and len(label) <= 120:
+                if re.match(
+                    r"^(Investigating|Inspecting|Attempting|Checking|Reviewing|Waiting|Preparing|Running)\b",
+                    label,
+                ):
+                    if not re.search(
+                        r"\b(solved|resolved|verified|fixed|root cause|successful|successfully)\b",
+                        label,
+                        re.I,
+                    ):
+                        if isinstance(summary, str) and len(summary) <= 400:
+                            output = {
+                                "label": label,
+                                "summary": summary,
+                                "evidence": evidence,
+                                "source": "optional LLM interpretation",
+                                "grouping": "fixed actor / request / call membership",
+                            }
+    return output
 
 
 class SemanticRefiner:

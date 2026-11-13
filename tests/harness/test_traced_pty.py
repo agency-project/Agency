@@ -63,7 +63,7 @@ def test_reap_finds_auto_attached_thread_when_clone_notification_is_lost(monkeyp
         if status >> 16 == pt.PTRACE_EVENT_CLONE and not lost_clone.is_set():
             lost_clone.set()
             pt.ptrace(pt.PTRACE_CONT, pid, 0, 0)
-            return
+            return None
         return original_dispatch(loop, pid, status)
 
     monkeypatch.setattr(TracerLoop, "_dispatch", dispatch)

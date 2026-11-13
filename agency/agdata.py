@@ -153,36 +153,41 @@ class agdata:
     def _to_serializable(obj):
         """Recursively convert agdata objects (including nested ones) to plain types."""
         if isinstance(obj, type) and issubclass(obj, agtype):
-            return obj.schema_type()
-        if isinstance(obj, type):
-            return obj.__name__
-        # Handle generic aliases like list[agimage] → "list[image]"
-        import typing
+            output = obj.schema_type()
+        elif isinstance(obj, type):
+            output = obj.__name__
+        else:
+            # Handle generic aliases like list[agimage] → "list[image]"
+            import typing
 
-        origin = typing.get_origin(obj)
-        if origin is list:
-            args = typing.get_args(obj)
-            if args:
+            origin = typing.get_origin(obj)
+            args = ()
+            if origin is list:
+                args = typing.get_args(obj)
+            if origin is list and args:
                 inner = agdata._to_serializable(args[0])
-                return f"list[{inner}]"
-        if isinstance(obj, agdata):
-            obj._resolve()
-            return {k: agdata._to_serializable(v) for k, v in obj._data.items()}
-        if isinstance(obj, dict):
-            return {k: agdata._to_serializable(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [agdata._to_serializable(v) for v in obj]
-        if isinstance(obj, tuple):
-            return [agdata._to_serializable(v) for v in obj]
-        if is_dataclass(obj) and not isinstance(obj, type):
-            return {
-                field.name: agdata._to_serializable(getattr(obj, field.name))
-                for field in fields(obj)
-            }
-        model_dump = getattr(obj, "model_dump", None)
-        if callable(model_dump):
-            return agdata._to_serializable(model_dump())
-        return obj
+                output = f"list[{inner}]"
+            elif isinstance(obj, agdata):
+                obj._resolve()
+                output = {k: agdata._to_serializable(v) for k, v in obj._data.items()}
+            elif isinstance(obj, dict):
+                output = {k: agdata._to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                output = [agdata._to_serializable(v) for v in obj]
+            elif isinstance(obj, tuple):
+                output = [agdata._to_serializable(v) for v in obj]
+            elif is_dataclass(obj) and not isinstance(obj, type):
+                output = {
+                    field.name: agdata._to_serializable(getattr(obj, field.name))
+                    for field in fields(obj)
+                }
+            else:
+                model_dump = getattr(obj, "model_dump", None)
+                if callable(model_dump):
+                    output = agdata._to_serializable(model_dump())
+                else:
+                    output = obj
+        return output
 
     def to_dict(self) -> dict:
         self._resolve()
@@ -234,40 +239,42 @@ class agdata:
     def _resolve_dependency(value):
         if isinstance(value, agdata):
             value._resolve()
-            return value
-        if isinstance(value, list):
-            return [agdata._resolve_dependency(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(agdata._resolve_dependency(item) for item in value)
-        if isinstance(value, dict):
-            return {key: agdata._resolve_dependency(item) for key, item in value.items()}
-        if is_dataclass(value) and not isinstance(value, type):
-            return replace(
+            output = value
+        elif isinstance(value, list):
+            output = [agdata._resolve_dependency(item) for item in value]
+        elif isinstance(value, tuple):
+            output = tuple(agdata._resolve_dependency(item) for item in value)
+        elif isinstance(value, dict):
+            output = {key: agdata._resolve_dependency(item) for key, item in value.items()}
+        elif is_dataclass(value) and not isinstance(value, type):
+            output = replace(
                 value,
                 **{
                     field.name: agdata._resolve_dependency(getattr(value, field.name))
                     for field in fields(value)
                 },
             )
-        model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if not isinstance(dumped, dict):
-                raise TypeError(f"{type(value).__name__}.model_dump() must return a dictionary")
-            updates = {key: agdata._resolve_dependency(item) for key, item in dumped.items()}
-            model_copy = getattr(value, "model_copy", None)
-            if callable(model_copy):
-                return model_copy(update=updates)
-            try:
-                for key, item in updates.items():
-                    setattr(value, key, item)
-            except (AttributeError, TypeError):
-                # Generic immutable model-like values have no standard copy
-                # protocol.  Preserve their resolved data rather than leaving
-                # hidden pending handles behind.
-                return updates
-            return value
-        return value
+        else:
+            output = value
+            model_dump = getattr(value, "model_dump", None)
+            if callable(model_dump):
+                dumped = model_dump()
+                if not isinstance(dumped, dict):
+                    raise TypeError(f"{type(value).__name__}.model_dump() must return a dictionary")
+                updates = {key: agdata._resolve_dependency(item) for key, item in dumped.items()}
+                model_copy = getattr(value, "model_copy", None)
+                if callable(model_copy):
+                    output = model_copy(update=updates)
+                else:
+                    try:
+                        for key, item in updates.items():
+                            setattr(value, key, item)
+                    except (AttributeError, TypeError):
+                        # Generic immutable model-like values have no standard copy
+                        # protocol.  Preserve their resolved data rather than leaving
+                        # hidden pending handles behind.
+                        output = updates
+        return output
 
     def resolve_input_dependencies(self) -> None:
         """Resolve pending data/result handles nested inside self, in-place."""

@@ -431,34 +431,33 @@ def _reap_orphaned_run_dirs() -> None:
     `container.py`'s `reap_orphaned_containers()`.
     """
     global _run_dir_reap_done
-    if _run_dir_reap_done:
-        return
-    _run_dir_reap_done = True
-    import shutil
+    if not _run_dir_reap_done:
+        _run_dir_reap_done = True
+        import shutil
 
-    try:
-        root = agency_tmp_dir()
-        own_pid = os.getpid()
-        for d in root.iterdir():
-            if not d.is_dir() or d == _run_dir:
-                continue
-            owner = d / _RUN_DIR_OWNER_FILE
-            try:
-                owner_pid = int(owner.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
-                continue  # no readable owner record -- never guess, leave it
-            if owner_pid == own_pid or pid_alive(owner_pid):
-                continue
-            if _dir_has_live_listener(d):
-                continue  # stale owner record over a live run -- leave it
-            print(
-                f"[agutil] Reaping run dir {d.name!r}, orphaned by dead "
-                f"process {owner_pid} (likely SIGKILL'd)",
-                flush=True,
-            )
-            shutil.rmtree(d, ignore_errors=True)
-    except Exception as _e:
-        print(f"[agutil] WARNING: startup run dir reap failed: {_e}")
+        try:
+            root = agency_tmp_dir()
+            own_pid = os.getpid()
+            for d in root.iterdir():
+                if not d.is_dir() or d == _run_dir:
+                    continue
+                owner = d / _RUN_DIR_OWNER_FILE
+                try:
+                    owner_pid = int(owner.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError):
+                    continue  # no readable owner record -- never guess, leave it
+                if owner_pid == own_pid or pid_alive(owner_pid):
+                    continue
+                if _dir_has_live_listener(d):
+                    continue  # stale owner record over a live run -- leave it
+                print(
+                    f"[agutil] Reaping run dir {d.name!r}, orphaned by dead "
+                    f"process {owner_pid} (likely SIGKILL'd)",
+                    flush=True,
+                )
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception as _e:
+            print(f"[agutil] WARNING: startup run dir reap failed: {_e}")
 
 
 def new_uds_path(prefix: str) -> str:

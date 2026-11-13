@@ -120,7 +120,7 @@ class PtyDriver:
 
     def begin_turn(self, prompt):
         """Return a turn identity this driver commits itself, else None."""
-        return None
+        return
 
     def clear_input(self, handle, wait_until):
         # These CLIs clear the interrupted prompt. Ctrl+U clears any restored
@@ -210,55 +210,54 @@ class _HookPtyDriver(PtyDriver):
         path.write_text(json.dumps({"hooks": hooks}))
 
     def _event_from_payload(self, payload):
-        if payload.get("agent_id") or payload.get("subagentType"):
-            return None
-        sid = payload.get("session_id", payload.get("sessionId"))
-        if self.session_id is None:
-            self.session_id = sid
-            if self.name == "grok" and sid:
-                # Grok's hooks omit transcript_path, but its ACP session log
-                # has a deterministic location beneath GROK_HOME.
-                self.transcript_path = (
-                    self.root / "sessions" / "%2Fworkspace" / sid / "updates.jsonl"
-                )
-        if sid != self.session_id:
-            return None
-        transcript = payload.get("transcript_path", payload.get("transcriptPath"))
-        if transcript:
-            path = Path(transcript)
-            if not path.resolve().is_relative_to(self.root.resolve()):
-                raise RuntimeError("native transcript escaped isolated state")
-            self.transcript_path = path
-        kind = payload.get("hook_event_name") or {
-            "session_start": "SessionStart",
-            "user_prompt_submit": "UserPromptSubmit",
-            "stop": "Stop",
-            "stop_cancelled": "StopCancelled",
-            "stop_failure": "StopFailure",
-        }.get(payload.get("hookEventName"))
-        turn = payload.get("turn_id", payload.get("promptId"))
-        event = {"turn_id": turn}
-        if kind == "UserPromptSubmit":
-            prompt = self._submitted_prompt(payload.get("prompt"))
-            event.update(kind="submit", prompt=prompt)
-            self._last_prompt = prompt
-            self._last_turn_id = turn
-            return event
-        if kind == "Stop":
-            return self._stop_event(event, payload)
-        if kind == "StopCancelled":
-            if payload.get("reason") == "user_interrupt":
-                event["kind"] = "interrupt"
-            else:
-                event.update(kind="error", error=f"Grok stopped: {payload.get('reason')}")
-            return event
-        if kind == "StopFailure":
-            event.update(
-                kind="error",
-                error=f"Grok failed: {payload.get('errorDetails', payload.get('error'))}",
-            )
-            return event
-        return None
+        output = None
+        if not (payload.get("agent_id") or payload.get("subagentType")):
+            sid = payload.get("session_id", payload.get("sessionId"))
+            if self.session_id is None:
+                self.session_id = sid
+                if self.name == "grok" and sid:
+                    # Grok's hooks omit transcript_path, but its ACP session log
+                    # has a deterministic location beneath GROK_HOME.
+                    self.transcript_path = (
+                        self.root / "sessions" / "%2Fworkspace" / sid / "updates.jsonl"
+                    )
+            if sid == self.session_id:
+                transcript = payload.get("transcript_path", payload.get("transcriptPath"))
+                if transcript:
+                    path = Path(transcript)
+                    if not path.resolve().is_relative_to(self.root.resolve()):
+                        raise RuntimeError("native transcript escaped isolated state")
+                    self.transcript_path = path
+                kind = payload.get("hook_event_name") or {
+                    "session_start": "SessionStart",
+                    "user_prompt_submit": "UserPromptSubmit",
+                    "stop": "Stop",
+                    "stop_cancelled": "StopCancelled",
+                    "stop_failure": "StopFailure",
+                }.get(payload.get("hookEventName"))
+                turn = payload.get("turn_id", payload.get("promptId"))
+                event = {"turn_id": turn}
+                if kind == "UserPromptSubmit":
+                    prompt = self._submitted_prompt(payload.get("prompt"))
+                    event.update(kind="submit", prompt=prompt)
+                    self._last_prompt = prompt
+                    self._last_turn_id = turn
+                    output = event
+                elif kind == "Stop":
+                    output = self._stop_event(event, payload)
+                elif kind == "StopCancelled":
+                    if payload.get("reason") == "user_interrupt":
+                        event["kind"] = "interrupt"
+                    else:
+                        event.update(kind="error", error=f"Grok stopped: {payload.get('reason')}")
+                    output = event
+                elif kind == "StopFailure":
+                    event.update(
+                        kind="error",
+                        error=f"Grok failed: {payload.get('errorDetails', payload.get('error'))}",
+                    )
+                    output = event
+        return output
 
     def _submitted_prompt(self, prompt):
         return prompt

@@ -17,3 +17,12 @@ repos:
       - id: ruff
         args: ["--fix"]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: check-cleanup-returns
+        name: no bare return in cleanup functions
+        entry: python scripts/check_cleanup_returns.py
+        language: python
+        types: [python]
+        exclude: ^tests/

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 def _discard_control_handle(_handle: object) -> None:
     """Default register_control_handle -- a caller that doesn't care about
     pause/resume/kill control (e.g. a test) needn't pass one."""
-    return None
+    return
 
 
 def _run_one_pty_execution(_key: object, factory: Callable[[], object], prompt: str):
