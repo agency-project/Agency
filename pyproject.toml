@@ -52,8 +52,10 @@ packages = ["agency"]
 # Agency runs them from there, and a binary reporting another version is
 # refused.
 [tool.agency.harnesses]
+antigravity = "1.5.9"
 claude_code = "2.1.311"
 codex = "0.147.0"
+dsh = "0.2.2-rc.2"
 grok = "1.0.77"
 kimi = "2.5.2"
 opencode = "1.19.5"

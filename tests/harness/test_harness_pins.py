@@ -9,7 +9,7 @@ from agency.configs.agconfig import agconfig, agentconfig, harnessadapterconfig
 from agency.harness import executable, install, pins
 
 ROOT = Path(__file__).resolve().parents[2]
-HARNESSES = ["claude_code", "codex", "grok", "kimi", "opencode"]
+HARNESSES = ["antigravity", "claude_code", "codex", "dsh", "grok", "kimi", "opencode"]
 
 
 def test_every_external_harness_is_pinned_and_installable():

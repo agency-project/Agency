@@ -109,8 +109,10 @@ worker = Agent(agconfig=cfg, harness="native")
 | `harness` | Program required in the sandbox |
 | --- | --- |
 | `native` | Included with Agency; no separate CLI. |
+| `antigravity` | `antigravity` (Antigravity CLI, `agy`) **1.5.9** |
 | `claude_code` | `claude` **2.1.311** |
 | `codex` | `codex` **0.147.0** |
+| `dsh` | DeepSeek Harness runtime **0.2.2-rc.2** |
 | `grok` | `grok` **1.0.77** |
 | `kimi` | `kimi` **2.5.2** |
 | `opencode` | `opencode` **1.19.5** |
@@ -120,7 +122,7 @@ Agency is verified with exactly these versions
 another one. Install them with:
 
 ```sh
-agency install-harnesses            # all five, or name some: agency install-harnesses codex grok
+agency install-harnesses            # all seven, or name some: agency install-harnesses codex grok
 ```
 
 They are self-contained Linux x86-64 executables, put in
@@ -135,6 +137,17 @@ path are both missing, starting the agent fails and says to run
 
 These integrations are sensitive to CLI versions; start with native for the
 shortest setup.
+
+`dsh` and `antigravity` run their CLIs' non-interactive modes, one process per
+attempt, rather than a terminal session: an attempt ends when the CLI answers,
+and the next attempt resumes the CLI's own session. Neither CLI has a step
+limit, so `max_steps` does not apply, and a redirect waits for the attempt to
+end. Both talk to Agency's gateway, so the agent's configured model backend
+serves them: `dsh` as a custom OpenAI Chat Completions provider, `antigravity`
+through its Gemini API client (`GOOGLE_GEMINI_BASE_URL`). Antigravity checks
+`--model` against its own catalog, so it is given the model's own name when that
+is a Gemini model (`google/gemini-4-carbon` becomes `gemini-4-carbon`) and
+`gemini-4-carbon` otherwise; `llm.reasoning_effort` becomes its `--effort`.
 
 ## Work on a project
 

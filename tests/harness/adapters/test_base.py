@@ -12,6 +12,8 @@ from agency.harness.adapters.base import (
 from agency.harness.adapters.opencode import OpenCodeAdapter
 from agency.harness.adapters.claude_code import ClaudeCodeAdapter
 from agency.harness.adapters.codex import CodexAdapter
+from agency.harness.adapters.antigravity import AntigravityAdapter
+from agency.harness.adapters.deepseek_harness import DeepSeekHarnessAdapter
 from agency.harness.adapters.grok import GrokAdapter
 from agency.harness.adapters.kimi import KimiAdapter
 from agency.harness.adapters.native import NativeAdapter
@@ -41,6 +43,14 @@ class TestForConfigDispatch:
     def test_kimi_engine_returns_kimi_adapter(self):
         adapter = HarnessAdapter.for_config("kimi", agconfig())
         assert isinstance(adapter, KimiAdapter)
+
+    def test_dsh_engine_returns_deepseek_harness_adapter(self):
+        adapter = HarnessAdapter.for_config("dsh", agconfig())
+        assert isinstance(adapter, DeepSeekHarnessAdapter)
+
+    def test_antigravity_engine_returns_antigravity_adapter(self):
+        adapter = HarnessAdapter.for_config("antigravity", agconfig())
+        assert isinstance(adapter, AntigravityAdapter)
 
     def test_unknown_engine_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown harness"):

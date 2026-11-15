@@ -178,26 +178,28 @@ class HarnessAdapter:
 
     @staticmethod
     def for_config(harness: str, agconfig: "agconfig_cls") -> "HarnessAdapter":
+        from .antigravity import AntigravityAdapter
         from .claude_code import ClaudeCodeAdapter
         from .codex import CodexAdapter
+        from .deepseek_harness import DeepSeekHarnessAdapter
         from .grok import GrokAdapter
         from .kimi import KimiAdapter
         from .native import NativeAdapter
         from .opencode import OpenCodeAdapter
 
-        if harness == "native":
-            return NativeAdapter(agconfig)
-        if harness == "opencode":
-            return OpenCodeAdapter(agconfig)
-        if harness == "claude_code":
-            return ClaudeCodeAdapter(agconfig)
-        if harness == "codex":
-            return CodexAdapter(agconfig)
-        if harness == "grok":
-            return GrokAdapter(agconfig)
-        if harness == "kimi":
-            return KimiAdapter(agconfig)
-        raise ValueError(
-            f"Unknown harness {harness!r} -- set agent(harness=...) to one of "
-            f"'native', 'opencode', 'claude_code', 'codex', 'grok', 'kimi'"
-        )
+        adapters = {
+            "native": NativeAdapter,
+            "opencode": OpenCodeAdapter,
+            "claude_code": ClaudeCodeAdapter,
+            "codex": CodexAdapter,
+            "grok": GrokAdapter,
+            "kimi": KimiAdapter,
+            "dsh": DeepSeekHarnessAdapter,
+            "antigravity": AntigravityAdapter,
+        }
+        if harness not in adapters:
+            raise ValueError(
+                f"Unknown harness {harness!r} -- set agent(harness=...) to one of "
+                + ", ".join(repr(name) for name in adapters)
+            )
+        return adapters[harness](agconfig)

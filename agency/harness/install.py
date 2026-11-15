@@ -22,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from .pins import (
@@ -36,6 +37,19 @@ from .pins import (
 _NPM = "https://registry.npmjs.org"
 _KIMI = "https://code.kimi.com/kimi-code/binaries"
 _GROK = "https://x.ai/cli"
+_PYPI = "https://pypi.org/pypi"
+_ANTIGRAVITY = "https://storage.googleapis.com/antigravity-public/antigravity-cli"
+# Antigravity's release manifest
+# (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
+# names only the latest build, so each pinned version records its build path
+# and the SHA-512 that manifest published for it.
+_ANTIGRAVITY_BUILDS = {
+    "1.5.9": (
+        "1.5.9-4515810895593472",
+        "d01eb13ba7750eed18907f1ae8860864371e0ad9064415e8d033d22b4bd7b9b4"
+        "e4c7f962058520b452d67db1c33163d9a889d55a7dffa159596ec6cd91a87b79",
+    ),
+}
 _CHUNK = 1 << 20
 
 
@@ -112,9 +126,67 @@ def _install_grok(version: str, work: Path, destination: Path) -> None:
     binary.chmod(0o755)
 
 
+def _pep440(version: str) -> str:
+    """``0.2.2-rc.2`` (what ``dsh --version`` reports) -> ``0.2.2rc2`` (PyPI)."""
+    for tag, short in (("-alpha.", "a"), ("-beta.", "b"), ("-rc.", "rc")):
+        version = version.replace(tag, short)
+    return version
+
+
+def _install_dsh(version: str, work: Path, destination: Path) -> None:
+    # DeepSeek's Python SDK ships the standalone runtime (a single-executable
+    # Node build plus its ripgrep) as a platform wheel; PyPI lists its SHA-256.
+    metadata = _fetch_json(f"{_PYPI}/deepseek-harness-runtime-bin/{_pep440(version)}/json")
+    wheel = next(
+        (f for f in metadata["urls"] if f["filename"].endswith("manylinux_2_28_x86_64.whl")),
+        None,
+    )
+    if wheel is None:
+        raise RuntimeError(f"dsh {version}: no Linux x86-64 runtime wheel on PyPI")
+    digest = hashlib.sha256()
+    archive = work / "runtime.whl"
+    _fetch(wheel["url"], archive, digest)
+    if digest.hexdigest() != wheel["digests"]["sha256"]:
+        raise RuntimeError(f"dsh {version}: the download does not match its PyPI digest")
+    prefix = "deepseek_harness_runtime/runtime/"
+    runtime = destination / "runtime"
+    with zipfile.ZipFile(archive) as wheel_file:
+        for member in wheel_file.infolist():
+            if member.is_dir() or not member.filename.startswith(prefix):
+                continue
+            relative = Path(member.filename[len(prefix) :])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError(f"dsh {version}: unsafe path in the wheel: {member.filename}")
+            target = runtime / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with wheel_file.open(member) as source, open(target, "wb") as out:
+                shutil.copyfileobj(source, out)
+            # Wheels do not keep the executable bit: the runtime and its
+            # ripgrep are the two files at the top of runtime/.
+            if len(relative.parts) == 1:
+                target.chmod(0o755)
+
+
+def _install_antigravity(version: str, work: Path, destination: Path) -> None:
+    if version not in _ANTIGRAVITY_BUILDS:
+        raise RuntimeError(
+            f"antigravity {version}: no recorded build; add it to _ANTIGRAVITY_BUILDS"
+        )
+    build, expected = _ANTIGRAVITY_BUILDS[version]
+    digest = hashlib.sha512()
+    archive = work / "agy.tar.gz"
+    _fetch(f"{_ANTIGRAVITY}/{build}/linux-x64/cli_linux_x64.tar.gz", archive, digest)
+    if digest.hexdigest() != expected:
+        raise RuntimeError(f"antigravity {version}: the download does not match its manifest")
+    with tarfile.open(archive) as tar:
+        tar.extract("antigravity", destination, filter="data")
+
+
 _INSTALLERS = {
+    "antigravity": _install_antigravity,
     "claude_code": _install_claude_code,
     "codex": _install_codex,
+    "dsh": _install_dsh,
     "grok": _install_grok,
     "kimi": _install_kimi,
     "opencode": _install_opencode,

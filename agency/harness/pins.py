@@ -17,8 +17,10 @@ from pathlib import Path
 
 # Where each harness's executable lies inside its install directory.
 BINARY_RELPATH = {
+    "antigravity": "antigravity",
     "claude_code": "package/claude",
     "codex": "package/vendor/x86_64-unknown-linux-musl/bin/codex",
+    "dsh": "runtime/deepseek-harness-sdk-runtime-linux-x64",
     "grok": "grok",
     "kimi": "kimi",
     "opencode": "package/bin/opencode",
