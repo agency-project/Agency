@@ -203,3 +203,10 @@ def test_antigravity_answers_its_safety_monitor_locally():
     verdict = json.loads(adapter._local_response(review)[0]["text"])
     assert set(verdict) == {"reason", "severity", "confidence"}
     assert adapter._local_response(turn) is None
+
+
+def test_deepseek_harness_treats_a_cut_off_turn_as_resumable():
+    from agency.harness.adapters.deepseek_harness import _RESUMABLE_ENDS
+
+    assert {"completed", "max-tokens"} <= _RESUMABLE_ENDS
+    assert "error" not in _RESUMABLE_ENDS

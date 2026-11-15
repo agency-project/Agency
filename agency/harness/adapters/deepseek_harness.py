@@ -38,6 +38,11 @@ _PROVIDER = "agency"
 _POLL_INTERVAL_S = 0.2
 _REAP_TIMEOUT_S = 30.0
 _PLUGIN = "_dsh_agpolicy_plugin.mjs"
+# How a headless run may end and still leave a session to continue: done, or
+# its last model response cut off at the output-token limit (dsh ends the turn
+# there; the engine's next attempt resumes it, as after any turn that ended
+# without the required output).
+_RESUMABLE_ENDS = {"completed", "max-tokens"}
 
 
 def parse_json_events(stdout: str) -> "tuple[dict | None, int, int]":
@@ -118,9 +123,9 @@ class DeepSeekHarnessAdapter(ChatCompletionsProtocol, HarnessAdapter):
             stdout, stderr, rc = handle.wait(timeout=_REAP_TIMEOUT_S)
 
             final, input_tokens, output_tokens = parse_json_events(stdout)
-            reason = ((final or {}).get("reason") or {}).get("kind")
-            if final is None or reason != "completed":
-                detail = json.dumps(final) if final else (stderr.strip() or stdout.strip())
+            reason = (final or {}).get("reason") or {}
+            if final is None or reason.get("kind") not in _RESUMABLE_ENDS:
+                detail = json.dumps(reason) if final else (stderr.strip() or stdout.strip())
                 return AttemptResult(
                     ok=False,
                     error_message=f"dsh exited with code {rc}: {detail[-4000:]}",
