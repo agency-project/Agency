@@ -36,6 +36,18 @@ from .pins import (
 _NPM = "https://registry.npmjs.org"
 _KIMI = "https://code.kimi.com/kimi-code/binaries"
 _GROK = "https://x.ai/cli"
+_ANTIGRAVITY = "https://storage.googleapis.com/antigravity-public/antigravity-cli"
+# Antigravity's release manifest
+# (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
+# names only the latest build, so each pinned version records its build path
+# and the SHA-512 that manifest published for it.
+_ANTIGRAVITY_BUILDS = {
+    "1.5.9": (
+        "1.5.9-4515810895593472",
+        "d01eb13ba7750eed18907f1ae8860864371e0ad9064415e8d033d22b4bd7b9b4"
+        "e4c7f962058520b452d67db1c33163d9a889d55a7dffa159596ec6cd91a87b79",
+    ),
+}
 _CHUNK = 1 << 20
 
 
@@ -112,7 +124,23 @@ def _install_grok(version: str, work: Path, destination: Path) -> None:
     binary.chmod(0o755)
 
 
+def _install_antigravity(version: str, work: Path, destination: Path) -> None:
+    if version not in _ANTIGRAVITY_BUILDS:
+        raise RuntimeError(
+            f"antigravity {version}: no recorded build; add it to _ANTIGRAVITY_BUILDS"
+        )
+    build, expected = _ANTIGRAVITY_BUILDS[version]
+    digest = hashlib.sha512()
+    archive = work / "agy.tar.gz"
+    _fetch(f"{_ANTIGRAVITY}/{build}/linux-x64/cli_linux_x64.tar.gz", archive, digest)
+    if digest.hexdigest() != expected:
+        raise RuntimeError(f"antigravity {version}: the download does not match its manifest")
+    with tarfile.open(archive) as tar:
+        tar.extract("antigravity", destination, filter="data")
+
+
 _INSTALLERS = {
+    "antigravity": _install_antigravity,
     "claude_code": _install_claude_code,
     "codex": _install_codex,
     "grok": _install_grok,

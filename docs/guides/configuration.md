@@ -109,6 +109,7 @@ worker = Agent(agconfig=cfg, harness="native")
 | `harness` | Program required in the sandbox |
 | --- | --- |
 | `native` | Included with Agency; no separate CLI. |
+| `antigravity` | `antigravity` (Antigravity CLI, `agy`) **1.5.9** |
 | `claude_code` | `claude` **2.1.311** |
 | `codex` | `codex` **0.147.0** |
 | `grok` | `grok` **1.0.77** |
@@ -120,7 +121,7 @@ Agency is verified with exactly these versions
 another one. Install them with:
 
 ```sh
-agency install-harnesses            # all five, or name some: agency install-harnesses codex grok
+agency install-harnesses            # all six, or name some: agency install-harnesses codex grok
 ```
 
 They are self-contained Linux x86-64 executables, put in
@@ -135,6 +136,17 @@ path are both missing, starting the agent fails and says to run
 
 These integrations are sensitive to CLI versions; start with native for the
 shortest setup.
+
+`antigravity` runs its CLI's non-interactive mode, one process per attempt,
+rather than a terminal session: an attempt ends when the CLI answers, and the
+next attempt resumes the CLI's own session. The CLI has no step limit, so
+`max_steps` does not apply, and a redirect waits for the attempt to end. It
+talks to Agency's gateway through its Gemini API client
+(`GOOGLE_GEMINI_BASE_URL`), so the agent's configured model backend serves it.
+Antigravity checks `--model` against its own catalog, so it is given the model's
+own name when that is a Gemini model (`google/gemini-4-carbon` becomes
+`gemini-4-carbon`) and `gemini-4-carbon` otherwise; `llm.reasoning_effort`
+becomes its `--effort`.
 
 ## Work on a project
 

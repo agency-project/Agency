@@ -17,6 +17,7 @@ from pathlib import Path
 
 # Where each harness's executable lies inside its install directory.
 BINARY_RELPATH = {
+    "antigravity": "antigravity",
     "claude_code": "package/claude",
     "codex": "package/vendor/x86_64-unknown-linux-musl/bin/codex",
     "grok": "grok",
