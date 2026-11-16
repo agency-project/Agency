@@ -22,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from .pins import (
@@ -36,6 +37,7 @@ from .pins import (
 _NPM = "https://registry.npmjs.org"
 _KIMI = "https://code.kimi.com/kimi-code/binaries"
 _GROK = "https://x.ai/cli"
+_PYPI = "https://pypi.org/pypi"
 _CHUNK = 1 << 20
 
 
@@ -112,9 +114,51 @@ def _install_grok(version: str, work: Path, destination: Path) -> None:
     binary.chmod(0o755)
 
 
+def _pep440(version: str) -> str:
+    """``0.2.2-rc.2`` (what ``dsh --version`` reports) -> ``0.2.2rc2`` (PyPI)."""
+    for tag, short in (("-alpha.", "a"), ("-beta.", "b"), ("-rc.", "rc")):
+        version = version.replace(tag, short)
+    return version
+
+
+def _install_dsh(version: str, work: Path, destination: Path) -> None:
+    # DeepSeek's Python SDK ships the standalone runtime (a single-executable
+    # Node build plus its ripgrep) as a platform wheel; PyPI lists its SHA-256.
+    metadata = _fetch_json(f"{_PYPI}/deepseek-harness-runtime-bin/{_pep440(version)}/json")
+    wheel = next(
+        (f for f in metadata["urls"] if f["filename"].endswith("manylinux_2_28_x86_64.whl")),
+        None,
+    )
+    if wheel is None:
+        raise RuntimeError(f"dsh {version}: no Linux x86-64 runtime wheel on PyPI")
+    digest = hashlib.sha256()
+    archive = work / "runtime.whl"
+    _fetch(wheel["url"], archive, digest)
+    if digest.hexdigest() != wheel["digests"]["sha256"]:
+        raise RuntimeError(f"dsh {version}: the download does not match its PyPI digest")
+    prefix = "deepseek_harness_runtime/runtime/"
+    runtime = destination / "runtime"
+    with zipfile.ZipFile(archive) as wheel_file:
+        for member in wheel_file.infolist():
+            if member.is_dir() or not member.filename.startswith(prefix):
+                continue
+            relative = Path(member.filename[len(prefix) :])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError(f"dsh {version}: unsafe path in the wheel: {member.filename}")
+            target = runtime / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with wheel_file.open(member) as source, open(target, "wb") as out:
+                shutil.copyfileobj(source, out)
+            # Wheels do not keep the executable bit: the runtime and its
+            # ripgrep are the two files at the top of runtime/.
+            if len(relative.parts) == 1:
+                target.chmod(0o755)
+
+
 _INSTALLERS = {
     "claude_code": _install_claude_code,
     "codex": _install_codex,
+    "dsh": _install_dsh,
     "grok": _install_grok,
     "kimi": _install_kimi,
     "opencode": _install_opencode,

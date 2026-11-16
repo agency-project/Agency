@@ -111,6 +111,7 @@ worker = Agent(agconfig=cfg, harness="native")
 | `native` | Included with Agency; no separate CLI. |
 | `claude_code` | `claude` **2.1.311** |
 | `codex` | `codex` **0.147.0** |
+| `dsh` | DeepSeek Harness runtime **0.2.2-rc.2** |
 | `grok` | `grok` **1.0.77** |
 | `kimi` | `kimi` **2.5.2** |
 | `opencode` | `opencode` **1.19.5** |
@@ -120,7 +121,7 @@ Agency is verified with exactly these versions
 another one. Install them with:
 
 ```sh
-agency install-harnesses            # all five, or name some: agency install-harnesses codex grok
+agency install-harnesses            # all six, or name some: agency install-harnesses codex grok
 ```
 
 They are self-contained Linux x86-64 executables, put in
@@ -135,6 +136,13 @@ path are both missing, starting the agent fails and says to run
 
 These integrations are sensitive to CLI versions; start with native for the
 shortest setup.
+
+`dsh` runs its CLI's non-interactive mode, one process per attempt, rather than
+a terminal session: an attempt ends when the CLI answers, and the next attempt
+resumes the CLI's own session. The CLI has no step limit, so `max_steps` does
+not apply, and a redirect waits for the attempt to end. It talks to Agency's
+gateway as a custom OpenAI Chat Completions provider, so the agent's configured
+model backend serves it.
 
 ## Work on a project
 

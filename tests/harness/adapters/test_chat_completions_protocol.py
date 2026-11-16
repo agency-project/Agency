@@ -5,6 +5,7 @@ import json
 import pytest
 
 from agency.configs.agconfig import agconfig
+from agency.harness.adapters.deepseek_harness import DeepSeekHarnessAdapter
 from agency.harness.adapters.grok import GrokAdapter
 from agency.harness.adapters.native import NativeAdapter
 from agency.harness.adapters.opencode import OpenCodeAdapter
@@ -28,7 +29,7 @@ def _parse_sse(text):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -49,7 +50,7 @@ def test_harness_to_agency_plain_messages(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -85,7 +86,7 @@ def test_harness_to_agency_assistant_with_tool_calls(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -112,7 +113,7 @@ def test_harness_to_agency_tool_role_message(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -142,7 +143,7 @@ def test_harness_to_agency_multimodal_content_array(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -165,7 +166,7 @@ def test_harness_to_agency_legacy_function_call_becomes_tool_use(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -182,7 +183,7 @@ def test_harness_to_agency_refusal_field_preserved(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -202,7 +203,7 @@ def test_harness_to_agency_tools_and_tool_choice_pass_through_unchanged(backend)
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -225,7 +226,7 @@ def test_agency_to_harness_text_only(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -261,7 +262,7 @@ def test_agency_to_harness_tool_use_and_anthropic_stop_reason_normalized(backend
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -281,7 +282,7 @@ def test_agency_to_harness_thinking_becomes_reasoning_content(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -306,7 +307,7 @@ def test_agency_to_harness_unknown_block_reconstructed_as_message_field(backend)
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -328,7 +329,7 @@ def test_agency_to_harness_foreign_origin_unknown_block_dropped(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -393,7 +394,7 @@ def test_agency_stream_to_harness_text_stream_ends_with_done(backend):
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
@@ -441,7 +442,7 @@ def test_agency_stream_to_harness_tool_use_emits_full_arguments_at_done(backend)
 
 @pytest.mark.parametrize(
     "backend",
-    [GrokAdapter, NativeAdapter, OpenCodeAdapter],
+    [DeepSeekHarnessAdapter, GrokAdapter, NativeAdapter, OpenCodeAdapter],
     indirect=True,
     ids=lambda cls: cls.__name__,
 )
