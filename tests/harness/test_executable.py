@@ -21,7 +21,9 @@ def install(path, contents=b"executable"):
     return path
 
 
-@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
+@pytest.mark.parametrize(
+    "harness", ["antigravity", "claude_code", "codex", "grok", "kimi", "opencode"]
+)
 def test_default_is_the_pinned_install_in_the_agency_directory(harness, tmp_path, monkeypatch):
     monkeypatch.setenv(pins.HOME_ENV, str(tmp_path))
     config = config_for(harness, None)
@@ -130,7 +132,9 @@ def test_missing_host_installation_is_an_error_not_an_image_fallback(tmp_path):
         executable.resolve_harness_binary("claude_code", config)
 
 
-@pytest.mark.parametrize("harness", ["claude_code", "codex", "grok", "kimi", "opencode"])
+@pytest.mark.parametrize(
+    "harness", ["antigravity", "claude_code", "codex", "grok", "kimi", "opencode"]
+)
 def test_binary_path_must_be_absolute_and_path_is_never_searched(harness, tmp_path, monkeypatch):
     install(tmp_path / "cli")
     monkeypatch.setenv("PATH", str(tmp_path))

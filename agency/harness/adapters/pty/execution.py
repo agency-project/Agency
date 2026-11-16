@@ -62,8 +62,8 @@ def restore_session(root, harness, session_id, blob):
 def session_file_allowed(harness, path):
     if path.is_absolute() or ".." in path.parts or not path.parts:
         return False
-    if harness in {"codex", "grok"}:
-        return path.parts[0] == "sessions" and path.suffix in {".jsonl", ".json"}
+    if harness in _SESSION_FILE_RULES:
+        return _SESSION_FILE_RULES[harness](path)
     if harness == "kimi":
         # Kimi 0.42.0 loses the restored model binding if its trust prompt is
         # accepted after resume. Carry forward the decision Agency already
@@ -79,6 +79,28 @@ def session_file_allowed(harness, path):
             return True
         return path.parts[0] == "sessions" and path.suffix in {".jsonl", ".json"}
     return harness == "opencode" and str(path) == "data/opencode/opencode.db"
+
+
+def _jsonl_sessions(path):
+    return path.parts[0] == "sessions" and path.suffix in {".jsonl", ".json"}
+
+
+def _antigravity_session_file(path):
+    # ~/.gemini/antigravity-cli/conversations/<id>.db holds the conversation
+    # (SQLite in WAL mode: turns not yet checkpointed are in <id>.db-wal);
+    # brain/<id>/ holds the transcripts and tool outputs it refers to.
+    if path.parts[:2] != (".gemini", "antigravity-cli") or len(path.parts) < 4:
+        return False
+    if path.parts[2] == "conversations":
+        return path.suffix in {".db", ".db-wal"}
+    return path.parts[2] == "brain" and path.suffix in {".jsonl", ".json", ".md", ".txt"}
+
+
+_SESSION_FILE_RULES = {
+    "codex": _jsonl_sessions,
+    "grok": _jsonl_sessions,
+    "antigravity": _antigravity_session_file,
+}
 
 
 def snapshot_session(root, harness, session_id):
