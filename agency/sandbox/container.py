@@ -2163,10 +2163,16 @@ class _ContainerBackendBase(agsandbox_backend):
     # a backend instance.
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def tag_image(source: str, dest: str) -> None:
+    @classmethod
+    def _image_runtime(cls) -> str:
+        """The runtime this backend class drives; the process-wide detected one
+        only for the runtime-agnostic base class (e.g. ``agent.load()``)."""
+        return cls._runtime or get_container_runtime()
+
+    @classmethod
+    def tag_image(cls, source: str, dest: str) -> None:
         """Retag an image from *source* to *dest* (docker/podman tag)."""
-        runtime = get_container_runtime()
+        runtime = cls._image_runtime()
         with _docker_semaphore_slot():
             subprocess.run(
                 [runtime, "tag", source, dest],
@@ -2174,10 +2180,10 @@ class _ContainerBackendBase(agsandbox_backend):
                 check=True,
             )
 
-    @staticmethod
-    def delete_image(tag: str, *, force: bool = False) -> None:
+    @classmethod
+    def delete_image(cls, tag: str, *, force: bool = False) -> None:
         """Remove an image by tag (docker/podman rmi).  Never raises."""
-        runtime = get_container_runtime()
+        runtime = cls._image_runtime()
         cmd = [runtime, "rmi"]
         if force:
             cmd.append("-f")
@@ -2185,15 +2191,15 @@ class _ContainerBackendBase(agsandbox_backend):
         with _docker_semaphore_slot():
             subprocess.run(cmd, capture_output=True)
 
-    @staticmethod
-    def export_image(tag: str, timeout: int) -> bytes:
+    @classmethod
+    def export_image(cls, tag: str, timeout: int) -> bytes:
         """Export an image to a tar byte-string (docker/podman save).
 
         The image must already exist.  Returns the raw tar bytes suitable
         for writing to a file or embedding in a larger archive.
         Raises ``subprocess.CalledProcessError`` on failure.
         """
-        runtime = get_container_runtime()
+        runtime = cls._image_runtime()
         with _docker_semaphore_slot():
             result = subprocess.run(
                 [runtime, "save", tag],
@@ -2203,13 +2209,13 @@ class _ContainerBackendBase(agsandbox_backend):
             )
         return result.stdout
 
-    @staticmethod
-    def import_image(image_bytes: bytes, timeout: int) -> None:
+    @classmethod
+    def import_image(cls, image_bytes: bytes, timeout: int) -> None:
         """Load an image from a tar byte-string (docker/podman load).
 
         Raises ``subprocess.CalledProcessError`` on failure.
         """
-        runtime = get_container_runtime()
+        runtime = cls._image_runtime()
         with _docker_semaphore_slot():
             subprocess.run(
                 [runtime, "load"],
@@ -2219,8 +2225,8 @@ class _ContainerBackendBase(agsandbox_backend):
                 timeout=timeout,
             )
 
-    @staticmethod
-    def relabel_owner_pid(tag: str, owner_pid: "int | None", timeout: int) -> None:
+    @classmethod
+    def relabel_owner_pid(cls, tag: str, owner_pid: "int | None", timeout: int) -> None:
         """Overwrite *tag*'s _AGENCY_OWNER_PID_LABEL (clearing it if
         *owner_pid* is None).
 
@@ -2246,7 +2252,7 @@ class _ContainerBackendBase(agsandbox_backend):
         anything that requires the image to actually run. The temporary
         container is always removed, even on failure.
         """
-        runtime = get_container_runtime()
+        runtime = cls._image_runtime()
         value = "" if owner_pid is None else str(owner_pid)
         with _docker_semaphore_slot():
             created = subprocess.run(

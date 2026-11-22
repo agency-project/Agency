@@ -628,7 +628,7 @@ class _ChrootBackend(agsandbox_backend):
                 continue
             jail_path = f"{root}/{d}"
             lines.append(f"mkdir -p {shlex.quote(jail_path)}")
-            lines.append(f"mount --bind {shlex.quote(host_path)} {shlex.quote(jail_path)}")
+            lines.append(f"mount --rbind {shlex.quote(host_path)} {shlex.quote(jail_path)}")
             lines.append(f"mount -o remount,bind,ro {shlex.quote(jail_path)} 2>/dev/null || true")
         # /dev: individual per-file bind mounts of the device files most
         # programs assume exist, directly on a plain mkdir -- NOT inside an
@@ -671,7 +671,7 @@ class _ChrootBackend(agsandbox_backend):
             jail_path = f"{root}{container}"
             lines.append(f"mkdir -p {shlex.quote(jail_path)}")
             lines.append(f"mkdir -p {shlex.quote(host)}")
-            lines.append(f"mount --bind {shlex.quote(host)} {shlex.quote(jail_path)}")
+            lines.append(f"mount --rbind {shlex.quote(host)} {shlex.quote(jail_path)}")
             if mode == "ro":
                 lines.append(
                     f"mount -o remount,bind,ro {shlex.quote(jail_path)} 2>/dev/null || true"

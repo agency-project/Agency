@@ -26,6 +26,7 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from concurrent.futures import Future
@@ -158,6 +159,20 @@ class agsandbox_backend(AgSandboxBackendFields):
     # requirements). Kept as a real, populated mechanism -- not a stub --
     # for the day a backend-specific field with no safe default is added.
     _REQUIRED_FIELDS_BY_BACKEND: "ClassVar[dict[str, tuple[str, ...]]]" = {}
+
+    def __getstate__(self) -> dict:
+        # A backend may be serialized and re-created in a worker process (the
+        # workspace lives on disk / in the runtime, so the copy re-attaches to
+        # it). The GPU-lease lock and idle-release thread are process-local and
+        # unpicklable; the copy starts with fresh ones.
+        state = self.__dict__.copy()
+        state.pop("_real_gpu_lock", None)
+        state["_real_gpu_idle_thread"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._real_gpu_lock = threading.RLock()
 
     def _validate_config(self, agconfig: "agconfig_cls") -> None:
         backend = agconfig.sandbox.backend
@@ -560,7 +575,10 @@ class agsandbox_backend(AgSandboxBackendFields):
 
     def write_file(self, path: str, content: str) -> None:
         quoted = shlex.quote(path)
-        sh_cmd = f"mkdir -p $(dirname {quoted}) && cat > {quoted}"
+        # The command substitution must be quoted: an unquoted $(dirname ...)
+        # word-splits a path containing spaces and mkdir creates the wrong
+        # directories, so the following `cat >` fails (see write_file_bytes()).
+        sh_cmd = f'mkdir -p -- "$(dirname -- {quoted})" && cat > {quoted}'
         _, rc = self._container_exec(
             sh_cmd,
             stdin=content.encode("utf-8"),
@@ -828,13 +846,24 @@ def _auto_detect_runtime() -> str:
         ) from None
 
 
-def backend_for_image_kind(kind: str) -> type:
+def backend_for_image_kind(kind: str, runtime: "str | None" = None) -> type:
     """Return the backend class whose tag_image/export_image/import_image/
     delete_image understand a checkpoint of the given IMAGE_KIND -- used
     by agent.py's load() to route to the same kind of backend that
     produced it in save(). Docker and podman checkpoints share
-    IMAGE_KIND="container" and both route to `_ContainerBackendBase`."""
+    IMAGE_KIND="container"; given the *runtime* that save() recorded
+    ("docker" or "podman") they route to that runtime's own backend class,
+    otherwise (older checkpoints) to `_ContainerBackendBase`, which uses
+    whichever runtime auto-detection prefers."""
     if kind == "container":
+        if runtime == "docker":
+            from .docker import _DockerBackend
+
+            return _DockerBackend
+        if runtime == "podman":
+            from .podman import _PodmanBackend
+
+            return _PodmanBackend
         from .container import _ContainerBackendBase
 
         return _ContainerBackendBase

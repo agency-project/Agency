@@ -1,7 +1,13 @@
-"""Unit tests for sandbox backend selection logic (sandbox/base.py):
-agsandbox_backend.for_config() and _auto_detect_runtime(). No chroot/docker
-execution required, just routing logic -- see test_docker.py/test_podman.py/
-test_chroot.py for the concrete backends these route to.
+"""Base-class tier: logic in sandbox/base.py that is not about any one backend.
+
+Backend selection (agsandbox_backend.for_config(), _auto_detect_runtime()),
+checkpoint-kind routing (backend_for_image_kind) and serialization of a backend
+for a worker process. No chroot/docker execution required. The concrete
+backends these route to are tested in test_docker_backend.py,
+test_podman_backend.py and test_chroot_backend.py (plus test_container_backends.py
+for what docker and podman share); the GPU-lease bookkeeping every backend
+inherits is in test_base_gpu_lease.py and background-process liveness in
+test_hibernation_liveness.py.
 """
 
 from __future__ import annotations
@@ -195,3 +201,87 @@ class TestBackendForImageKind:
 
         with pytest.raises(ValueError, match="Unknown sandbox checkpoint image kind"):
             backend_for_image_kind("not-a-real-kind")
+
+    def test_container_kind_routes_to_the_recorded_runtime(self):
+        from agency.sandbox import backend_for_image_kind
+        from agency.sandbox.docker import _DockerBackend
+        from agency.sandbox.podman import _PodmanBackend
+
+        assert backend_for_image_kind("container", "docker") is _DockerBackend
+        assert backend_for_image_kind("container", "podman") is _PodmanBackend
+
+    @pytest.mark.parametrize("runtime", [None, "", "unknown"])
+    def test_container_kind_without_a_known_runtime_uses_the_detecting_base(self, runtime):
+        from agency.sandbox import backend_for_image_kind
+        from agency.sandbox.container import _ContainerBackendBase
+
+        assert backend_for_image_kind("container", runtime) is _ContainerBackendBase
+
+    def test_the_runtime_is_irrelevant_for_a_chroot_checkpoint(self):
+        from agency.sandbox import backend_for_image_kind
+        from agency.sandbox.chroot import _ChrootBackend
+
+        assert backend_for_image_kind("chroot", "docker") is _ChrootBackend
+
+    def test_the_facade_forwards_the_runtime(self):
+        from agency.sandbox.agsandbox import agSandbox
+        from agency.sandbox.podman import _PodmanBackend
+
+        assert agSandbox.backend_for_image_kind("container", "podman") is _PodmanBackend
+
+    def test_every_backend_class_declares_its_image_kind(self):
+        from agency.sandbox import backend_for_image_kind
+
+        assert backend_for_image_kind("chroot").IMAGE_KIND == "chroot"
+        for runtime in ("docker", "podman"):
+            assert backend_for_image_kind("container", runtime).IMAGE_KIND == "container"
+            assert backend_for_image_kind("container", runtime)._runtime == runtime
+
+
+class TestBackendSerialization:
+    """A backend may be serialized and re-created in a worker process: it must
+    pickle (the GPU-lease lock and idle thread are process-local) and the copy
+    must have its own working lock."""
+
+    @staticmethod
+    def _roundtrip(backend):
+        import pickle
+
+        return pickle.loads(pickle.dumps(backend))
+
+    def test_the_copy_keeps_identity_and_has_a_fresh_lock(self, backend_kind):
+        from tests.sandbox.conftest import make_backend
+
+        original = make_backend(backend_kind, checkpoint_image="agency/ckpt-x")
+        original._real_gpu_holders = {"7"}
+        copy = self._roundtrip(original)
+        assert copy is not original
+        assert (copy._name, copy._agname, copy._checkpoint_image) == (
+            original._name,
+            original._agname,
+            "agency/ckpt-x",
+        )
+        assert copy._real_gpu_holders == {"7"}
+        assert copy._real_gpu_lock is not original._real_gpu_lock
+        with copy._real_gpu_lock:
+            with copy._real_gpu_lock:  # re-entrant, like the original
+                pass
+
+    def test_a_running_idle_release_thread_is_not_carried_over(self, backend_kind):
+        import threading
+
+        from tests.sandbox.conftest import make_backend
+
+        original = make_backend(backend_kind)
+        original._real_gpu_idle_thread = threading.Thread(target=lambda: None)
+        assert self._roundtrip(original)._real_gpu_idle_thread is None
+        assert original._real_gpu_idle_thread is not None, "serializing must not mutate the source"
+
+    def test_cloudpickle_round_trips_too(self, backend_kind):
+        import cloudpickle
+
+        from tests.sandbox.conftest import make_backend
+
+        copy = cloudpickle.loads(cloudpickle.dumps(make_backend(backend_kind)))
+        with copy._real_gpu_lock:
+            pass

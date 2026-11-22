@@ -53,5 +53,42 @@ jobs:
         # binaries, with no Node.js needed in the sandbox image.
         run: uv run agency install-harnesses
 
+      - name: Install sandbox backends (podman, docker, chroot)
+        # Sandbox tests run on every backend. Docker is preinstalled on
+        # ubuntu-latest; podman (rootless, with its user-namespace helpers) is
+        # installed explicitly so the version is not left to the runner image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          # The chroot backend needs unprivileged user namespaces, which
+          # Ubuntu 24.04 restricts through AppArmor by default.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          docker --version
+          podman --version
+
+      - name: Pull sandbox base image into docker and podman
+        # Docker and podman keep separate image stores; pull once so tests do
+        # not each pay for (or flake on) the download.
+        run: |
+          docker pull docker.io/library/python:3.12-slim
+          podman pull docker.io/library/python:3.12-slim
+
+      - name: Verify all three sandbox backends are usable
+        # The sandbox tests skip a backend that is unusable on the host. Fail
+        # loudly here instead, so a broken runner cannot turn a whole backend's
+        # coverage into silent skips.
+        run: |
+          docker info > /dev/null
+          podman info > /dev/null
+          uv run python - <<'EOF'
+          from tests.sandbox.conftest import ALL_BACKENDS, backend_available
+
+          missing = [kind for kind in ALL_BACKENDS if not backend_available(kind)]
+          assert not missing, f"sandbox backends unusable on this runner: {missing}"
+          print("usable sandbox backends:", ", ".join(ALL_BACKENDS))
+          EOF
+
       - name: Run pytest
-        run: uv run pytest
+        # -rs lists every skipped test with its reason, so any backend that
+        # silently stopped running shows up in the log.
+        run: uv run pytest -rs

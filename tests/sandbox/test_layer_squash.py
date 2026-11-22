@@ -1,8 +1,8 @@
 """Tests for _layer_squash.merge_layer_tars() -- the pure, no-docker-needed
 tar-manipulation core of diff-only checkpoint squashing. Fixtures are
 synthetic layer tars built directly via tarfile, not real docker/podman
-output -- see test_docker.py's TestLayerSquashIntegration for a live-docker
-correctness/layer-sharing/speed check against this same function.
+output -- see test_container_backends.py for the live docker/podman squash
+correctness checks that exercise this same function.
 """
 
 from __future__ import annotations

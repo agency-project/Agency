@@ -487,7 +487,9 @@ class ZfsRuntimeStorage:
         inspection = json.loads(
             sandbox._run(["docker", "inspect", sandbox._name], check=True).stdout
         )[0]
-        dataset = inspection.get("GraphDriver", {}).get("Data", {}).get("Dataset")
+        # `Data` is null (not absent) under the containerd snapshotter.
+        graph_data = (inspection.get("GraphDriver") or {}).get("Data") or {}
+        dataset = graph_data.get("Dataset")
         if not isinstance(dataset, str) or not dataset.startswith(self.parent + "/"):
             raise CheckpointCapabilityError(
                 "Docker did not report a container-owned ZFS dataset under checkpoint_zfs_parent"
