@@ -1092,8 +1092,18 @@ class TestCfsSupported:
         assert _container._ContainerBackendBase._cfs_supported() is expected
 
 
-_docker_available = shutil.which("docker") is not None
-_docker_daemon = pytest.mark.skipif(not _docker_available, reason="Docker daemon not reachable")
+def _docker_daemon_reachable() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True, timeout=60).returncode == 0
+    except Exception:
+        return False
+
+
+_docker_daemon = pytest.mark.skipif(
+    not _docker_daemon_reachable(), reason="Docker daemon not reachable"
+)
 
 
 class TestCpuCapSurvivesLifecycle:

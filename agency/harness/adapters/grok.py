@@ -101,18 +101,26 @@ class GrokDriver(_HookPtyDriver):
 
     def interrupted(self, handle):
         # Cancellation before the first response can restore the prompt
-        # without a turn-end hook. Require the *new* restored draft and the
-        # idle footer; the empty composer also exists during generation.
+        # without a turn-end hook. Evidence is either the restored draft in
+        # the composer or an idle footer over an empty composer -- the empty
+        # composer alone also exists during generation, so the cancel footer
+        # must be gone either way.
         lines, _x, _y, generation = handle.terminal_screen()
-        if self._last_prompt is None or generation <= self._interrupt_generation:
+        if self._last_prompt is None or generation <= getattr(self, "_interrupt_generation", -1):
+            return False
+        if "Ctrl+c:cancel" in lines:
             return False
         current = self._composer_line(handle)
         marker = self._last_prompt.split("\n", 1)[0]
         pasted = f"│ ❯ [Pasted: {len(self._last_prompt.splitlines())} lines]"
         # Grok collapses a restored multiline paste into a token. The prompt
-        # marker then appears only in the old transcript.
+        # marker then appears only in the old transcript. An empty composer
+        # over an idle footer is also interrupt evidence: the same empty
+        # composer exists during generation, so the cancel footer check
+        # above is what rules that out.
+        draft = current.removeprefix("│ ❯").removesuffix("│").strip()
         return any("Enter:send" in line for line in lines) and (
-            current.startswith("│ ❯ " + marker) or pasted in current
+            current.startswith("│ ❯ " + marker) or pasted in current or draft == ""
         )
 
     def clear_input(self, handle, wait_until):
