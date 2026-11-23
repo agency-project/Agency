@@ -62,7 +62,10 @@ jobs:
       - name: Install sandbox backends (podman, docker, chroot)
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          # debootstrap: builds the one-time chroot filesystem template
+          # (run under the runner's passwordless sudo by the template
+          # builder on first use).
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs debootstrap
           # The chroot backend needs unprivileged user namespaces, which
           # Ubuntu 24.04 restricts through AppArmor by default.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -90,6 +93,12 @@ jobs:
           assert not missing, f"sandbox backends unusable on this runner: {missing}"
           print("usable sandbox backends:", ", ".join(ALL_BACKENDS))
           EOF
+
+      - name: Build the chroot filesystem template
+        # One-time (~minutes) debootstrap build. Doing it here keeps it
+        # outside the per-test pytest timeout; the builder caches the
+        # result under the runner's temp root for the rest of the job.
+        run: uv run python -c "from agency.sandbox.chroot_template import chroot_template_dir; assert chroot_template_dir() is not None"
 
       - name: Run pytest (shard ${{ matrix.shard }} of 8)
         # -rs lists every skipped test with its reason, so any backend that
