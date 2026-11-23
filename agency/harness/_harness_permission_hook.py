@@ -6,8 +6,9 @@ Deliberately self-contained -- stdlib only (`json`, `os`, `sys`,
 runs as a subprocess of the harness binary itself (e.g. `claude`/`codex`/
 `grok` invoking their own hook), not inside this process, and can't reach
 into this process's Python state directly. Each harness adapter that uses
-it (`claude_code.py`, `codex.py`, `grok.py`, `kimi.py` -- their PreToolUse/
-PostToolUse payload shapes differ only in field naming, normalized below)
+it (`claude_code.py`, `codex.py`, `grok.py`, `kimi.py`, `antigravity.py` -- their
+PreToolUse/PostToolUse payload shapes differ only in field naming, normalized
+below; Antigravity also takes its decision in its own `{"decision"}` form)
 writes this file into the launch's own `config_home` and registers it via
 that CLI's own hook-config format.
 `AGPOLICY_BASE_URL`/`AGPOLICY_TOKEN` (set on the harness's own env, the same
@@ -44,9 +45,16 @@ _POLICY_TIMEOUT_S = 5.0
 # return immediately.
 _COMPLETION_TIMEOUT_S = 2.0
 _MAX_RESULT_FIELD_CHARS = 64 * 1024
+# Antigravity CLI nests the call as `toolCall: {id, name, args}` and reads a
+# top-level `{"decision", "reason"}`. Its adapter says so in the hook's env, so
+# that a payload this hook cannot read is still denied in the form agy reads;
+# main() also recognises the payload itself.
+_ANTIGRAVITY = False
 
 
 def main() -> int:
+    global _ANTIGRAVITY
+    _ANTIGRAVITY = os.environ.get("AGPOLICY_HOOK_DIALECT") == "antigravity"
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError as exc:
@@ -60,14 +68,19 @@ def main() -> int:
         _emit("deny", "Cannot check invocation admission: hook input must be an object")
         return 0
 
+    _ANTIGRAVITY = _ANTIGRAVITY or isinstance(payload.get("toolCall"), dict)
     hook_event_name = payload.get("hook_event_name") or {
         "pre_tool_use": "PreToolUse",
         "post_tool_use": "PostToolUse",
         "post_tool_use_failure": "PostToolUseFailure",
+        "PreToolUse": "PreToolUse",
+        "PostToolUse": "PostToolUse",
     }.get(payload.get("hookEventName"), "PreToolUse")
     if hook_event_name != "PreToolUse":
         if hook_event_name in ("PostToolUse", "PostToolUseFailure"):
             _report_completion(payload, hook_event_name)
+            if _ANTIGRAVITY:
+                print("{}")
         else:
             _emit("deny", "Cannot check invocation admission: unknown hook event")
         return 0
@@ -87,10 +100,13 @@ def main() -> int:
 
 
 def _check_tool_policy(payload: dict) -> "tuple[str, str | None, str | None]":
-    tool_name = payload.get("tool_name") or payload.get("toolName")
-    tool_input = (
-        payload.get("tool_input") if "tool_input" in payload else payload.get("toolInput", {})
-    )
+    if isinstance(payload.get("toolCall"), dict):
+        tool_name, tool_input = _antigravity_tool(payload["toolCall"])
+    else:
+        tool_name = payload.get("tool_name") or payload.get("toolName")
+        tool_input = (
+            payload.get("tool_input") if "tool_input" in payload else payload.get("toolInput", {})
+        )
     if not isinstance(tool_name, str) or not tool_name.strip() or not isinstance(tool_input, dict):
         return "deny", "Cannot check invocation admission: invalid tool name or input", None
 
@@ -135,10 +151,26 @@ def _check_tool_policy(payload: dict) -> "tuple[str, str | None, str | None]":
     return result["decision"], reason, result.get("call_id")
 
 
+def _antigravity_tool(call: dict) -> "tuple[object, object]":
+    """Antigravity calls every MCP tool through one built-in, ``call_mcp_tool``
+    with ``{ServerName, ToolName, Arguments}``; policy sees it under the
+    ``mcp__<server>__<tool>`` name Claude Code and Codex give MCP tools."""
+    args = call.get("args", {})
+    if call.get("name") == "call_mcp_tool" and isinstance(args, dict):
+        server, tool = args.get("ServerName"), args.get("ToolName")
+        if isinstance(server, str) and isinstance(tool, str) and server and tool:
+            return f"mcp__{server}__{tool}", args.get("Arguments") or {}
+    return call.get("name"), args
+
+
 def _tool_use_id(payload: dict) -> "str | None":
     """Every harness names this differently: Claude/Codex `tool_use_id`, Grok
-    `toolUseId`, Kimi `tool_call_id`. Without it PreToolUse cannot hand its
-    `call_id` to the separate PostToolUse process and the span never closes."""
+    `toolUseId`, Kimi `tool_call_id`, Antigravity `toolCall.id`. Without it
+    PreToolUse cannot hand its `call_id` to the separate PostToolUse process and
+    the span never closes."""
+    call = payload.get("toolCall")
+    if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
+        return call["id"]
     for key in ("tool_use_id", "toolUseId", "tool_call_id"):
         value = payload.get(key)
         if isinstance(value, str) and value:
@@ -206,7 +238,8 @@ def _report_completion(payload: dict, hook_event_name: str) -> None:
     # Kimi reports the tool's result as `tool_output`; the others use
     # `tool_response`, which may legitimately be null.
     result = payload["tool_response"] if "tool_response" in payload else payload.get("tool_output")
-    error = payload.get("error")
+    # Antigravity reports success as `error: ""` and has no result field.
+    error = payload.get("error") or None
     if hook_event_name == "PostToolUseFailure" and error is None:
         error = "Tool reported failure"
     encoded_result = json.dumps(result, default=str)
@@ -234,6 +267,12 @@ def _report_completion(payload: dict, hook_event_name: str) -> None:
 
 
 def _emit(decision: str, reason: "str | None") -> None:
+    if _ANTIGRAVITY:
+        out = {"decision": decision}
+        if reason:
+            out["reason"] = reason
+        print(json.dumps(out))
+        return
     out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision}}
     if reason:
         out["hookSpecificOutput"]["permissionDecisionReason"] = reason

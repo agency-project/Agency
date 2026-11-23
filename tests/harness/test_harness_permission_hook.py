@@ -444,3 +444,105 @@ def test_explicit_null_tool_response_is_not_overridden_by_tool_output(monkeypatc
     monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(post)))
     assert hook.main() == 0
     assert json.loads(requests[1].data)["result"] is None
+
+
+def _antigravity_payload(event="PreToolUse"):
+    payload = {
+        "hookEventName": event,
+        "conversationId": "conv-1",
+        "toolCall": {"id": "agy-call-1", "name": "run_command", "args": {"CommandLine": "ls"}},
+    }
+    if event == "PostToolUse":
+        payload["error"] = ""
+    return payload
+
+
+def test_antigravity_pretooluse_uses_its_own_decision_form(monkeypatch, capsys, tmp_path):
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        if request.full_url.endswith("/check_tool"):
+            return _Response({"decision": "deny", "reason": "no shell"})
+        return _Response({})
+
+    monkeypatch.setenv("AGPOLICY_BASE_URL", "http://gateway")
+    monkeypatch.setenv("AGPOLICY_TOKEN", "secret-token")
+    monkeypatch.setenv("AGPOLICY_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(hook.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(_antigravity_payload())))
+
+    assert hook.main() == 0
+
+    assert json.loads(requests[0].data) == {
+        "tool_name": "run_command",
+        "tool_input": {"CommandLine": "ls"},
+        "model_tool_call_id": "agy-call-1",
+    }
+    assert json.loads(capsys.readouterr().out) == {"decision": "deny", "reason": "no shell"}
+
+
+def test_antigravity_posttooluse_completes_the_span_and_answers_json(monkeypatch, capsys, tmp_path):
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        if request.full_url.endswith("/check_tool"):
+            return _Response({"decision": "allow", "call_id": "span-7"})
+        return _Response({})
+
+    monkeypatch.setenv("AGPOLICY_BASE_URL", "http://gateway")
+    monkeypatch.setenv("AGPOLICY_TOKEN", "secret-token")
+    monkeypatch.setenv("AGPOLICY_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(hook.urllib.request, "urlopen", urlopen)
+    for event in ("PreToolUse", "PostToolUse"):
+        monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(_antigravity_payload(event))))
+        assert hook.main() == 0
+
+    pre, post = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(pre) == {"decision": "allow"}
+    assert json.loads(post) == {}
+    assert requests[1].full_url == "http://gateway/agpolicy/complete_tool"
+    assert json.loads(requests[1].data) == {"call_id": "span-7", "result": None, "error": None}
+
+
+def test_antigravity_mcp_calls_are_checked_under_their_mcp_name(monkeypatch, capsys, tmp_path):
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        return _Response({"decision": "deny", "reason": "blocked"})
+
+    payload = _antigravity_payload()
+    payload["toolCall"] = {
+        "id": "agy-call-2",
+        "name": "call_mcp_tool",
+        "args": {"ServerName": "agency", "ToolName": "lookup", "Arguments": {"key": "k"}},
+    }
+    monkeypatch.setenv("AGPOLICY_BASE_URL", "http://gateway")
+    monkeypatch.setenv("AGPOLICY_TOKEN", "secret-token")
+    monkeypatch.setattr(hook.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(payload)))
+
+    assert hook.main() == 0
+
+    body = json.loads(requests[0].data)
+    assert body["tool_name"] == "mcp__agency__lookup"
+    assert body["tool_input"] == {"key": "k"}
+    assert json.loads(capsys.readouterr().out) == {"decision": "deny", "reason": "blocked"}
+
+
+def test_antigravity_gets_its_own_deny_form_for_input_the_hook_cannot_read(monkeypatch, capsys):
+    """Without a readable `toolCall` the payload cannot say whose hook this is;
+    the adapter's env does, so the deny is still one agy acts on."""
+    monkeypatch.setenv("AGPOLICY_HOOK_DIALECT", "antigravity")
+    for stdin in ("not json", "[]", json.dumps({"hookEventName": "PreToolUse"})):
+        monkeypatch.setattr(hook.sys, "stdin", io.StringIO(stdin))
+        assert hook.main() == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["decision"] == "deny" and "hookSpecificOutput" not in output
+
+    monkeypatch.delenv("AGPOLICY_HOOK_DIALECT")
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO("not json"))
+    assert hook.main() == 0
+    assert "hookSpecificOutput" in json.loads(capsys.readouterr().out)
