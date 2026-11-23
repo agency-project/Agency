@@ -29,6 +29,7 @@ dev = [
     "pytest",
     "pytest-mock",
     "pytest-timeout",
+    "pytest-xdist",
     "pre-commit",
     "ruff",
 ]
