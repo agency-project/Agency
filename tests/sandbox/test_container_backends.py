@@ -1093,9 +1093,7 @@ class TestCfsSupported:
 
 
 _docker_available = shutil.which("docker") is not None
-_docker_daemon = pytest.mark.skipif(
-    not _docker_available, reason="Docker daemon not reachable"
-)
+_docker_daemon = pytest.mark.skipif(not _docker_available, reason="Docker daemon not reachable")
 
 
 class TestCpuCapSurvivesLifecycle:

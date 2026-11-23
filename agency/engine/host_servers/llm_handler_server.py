@@ -1168,9 +1168,7 @@ class LlmHandlerServer:
         with self._message_store:
             harness_message_hashes = self._message_store.add_messages(harness_messages)
             patched_messages, fitted = self._fit_to_context(
-                self._message_store.materialize(
-                    harness_message_hashes, applied_patch_keys
-                ),
+                self._message_store.materialize(harness_message_hashes, applied_patch_keys),
                 call_label,
             )
             patched_message_hashes = self._message_store.add_messages(patched_messages)
@@ -1561,7 +1559,6 @@ class LlmHandlerServer:
                                 idx,
                                 {
                                     "type": stream_item["block_type"],
-                                    "index": idx,
                                     "text": "",
                                     "signature": "",
                                     "id": "",
