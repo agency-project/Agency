@@ -31,14 +31,17 @@ jobs:
   # Sandbox + harness tests. These are sensitive to CPU contention
   # (cgroup throughput assertions, wall-clock budgets, ptrace timing), so
   # every shard runs serially on its own runner -- never with xdist.
-  # Shards are balanced by test count; rebalance when large test files
-  # are added.
+  # Three shards: the x3-backend parametrized contract file was split into
+  # two (~11 minutes of pytest each in CI); its two halves get one runner
+  # each, and everything else shares the third. The chroot filesystem
+  # template is cached per runner, so no shard rebuilds it after the
+  # first run.
   sandbox:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [all_backends_contract, all_backends_checkpoints, everything_else]
     steps:
       - uses: actions/checkout@v4
 
@@ -103,16 +106,30 @@ jobs:
           print("usable sandbox backends:", ", ".join(ALL_BACKENDS))
           EOF
 
-      - name: Build the chroot filesystem template
-        # One-time (~minutes) debootstrap build. Doing it here keeps it
-        # outside the per-test pytest timeout; the builder caches the
-        # result under the runner's temp root for the rest of the job.
+      - name: Restore the chroot filesystem template from cache
+        # The template (~500MB) is keyed on the tool-set content digest the
+        # builder itself derives (sandbox_tools.py's package lists), so a
+        # changed tool set produces a new key and a rebuild. Restoring it
+        # turns the minutes-long debootstrap build into a short download;
+        # the build step below runs only on a cache miss. The cached path
+        # is the builder's own cache location (runner uid is 1001), so a
+        # restored template is found without any relinking.
+        id: template_cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/agency-1001/chroot_filesystem_templates
+          key: agency-chroot-template-${{ runner.os }}-${{ hashFiles('agency/sandbox/sandbox_tools.py') }}
+          restore-keys: |
+            agency-chroot-template-${{ runner.os }}-
+
+      - name: Build the chroot filesystem template (cache miss only)
+        if: steps.template_cache.outputs.cache-hit != 'true'
         run: uv run python -c "from agency.sandbox.chroot_template import chroot_template_dir; assert chroot_template_dir() is not None"
 
-      - name: Run pytest (shard ${{ matrix.shard }} of 8)
+      - name: Run pytest (shard ${{ matrix.shard }})
         # -rs lists every skipped test with its reason, so any backend that
         # silently stopped running shows up in the log.
-        run: uv run pytest -rs $(uv run python -c "from tests.ci_shards import sandbox_shard_files; print(' '.join(sandbox_shard_files(${{ matrix.shard }})))")
+        run: uv run pytest -rs $(uv run python -c "from tests.ci_shards import sandbox_shard_files; print(' '.join(sandbox_shard_files('${{ matrix.shard }}')))")
 
   # Everything outside tests/sandbox and tests/harness: no container
   # lifecycles, no cgroup throughput assertions, no wall-clock budgets --

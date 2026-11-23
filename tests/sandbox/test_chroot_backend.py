@@ -1290,14 +1290,15 @@ class TestJailFilesystem:
         """The jail owns its filesystem (a template copy), so system
         directories accept writes and stay isolated from the host: a file
         created inside the jail must not appear on the host."""
-        if not os.path.isdir(f"/{base}"):
+        jail_dir = sb._root / base
+        if not jail_dir.is_dir():
             pytest.skip(f"/{base} does not exist in the template")
         marker = f"agency-write-probe-{uuid.uuid4().hex[:8]}"
         output, rc = sb.exec(f"touch /{base}/{marker} && echo rc=0")
         assert rc == 0, f"write to /{base} failed inside the jail: {output}"
         assert "rc=0" in output, output
-        assert not os.path.exists(f"/{base}/{marker}"), (
-            f"file written inside the jail leaked to the host /{base}"
+        assert not (jail_dir / marker).exists(), (
+            f"file written inside the jail leaked to the template's /{base}"
         )
 
     def test_an_existing_system_file_is_isolated_from_the_host(self, sb):

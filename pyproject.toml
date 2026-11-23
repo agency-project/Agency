@@ -82,6 +82,16 @@ line-length = 100
 # scripts/check_cleanup_returns.py.
 select = ["F", "S110", "S112", "B012", "PLR0911", "PLR1711", "RET501", "RET502", "RET503"]
 
+[tool.ruff.lint.per-file-ignores]
+# The split tier-3 contract files import their `box`/`sb` fixtures from the
+# common harness module; pytest injects them by parameter name, so ruff
+# cannot see the use and would strip the imports (which silently drops the
+# backend parametrization). F811 is also ignored because test methods take
+# `sb`/`box` as parameters, which ruff's scope analysis misreads as
+# redefinitions of the imported fixtures.
+"tests/sandbox/test_all_backends.py" = ["F401", "F811"]
+"tests/sandbox/test_all_backends_checkpoints.py" = ["F401", "F811"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
