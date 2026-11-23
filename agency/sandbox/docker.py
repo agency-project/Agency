@@ -401,6 +401,18 @@ class _DockerBackend(_ContainerBackendBase):
                                 # whole containerd tree.
                                 if ctr[:2] == ["sudo", "-n"]:
                                     try:
+                                        # The snapshot dir itself (and its
+                                        # contents) needs -R; the ANCESTORS
+                                        # need plain a+rX or the path down to
+                                        # it is still untraversable -- rootful
+                                        # containerd keeps the whole
+                                        # /var/lib/containerd tree at 0700, so
+                                        # opening only snapshots/<id>/ left
+                                        # stat()/scandir() failing with EACCES
+                                        # and degraded every fast squash to
+                                        # export/import. Walk up only until an
+                                        # ancestor is already traversable (in
+                                        # practice /var/lib), never beyond.
                                         subprocess.run(
                                             [
                                                 "sudo",
@@ -413,6 +425,26 @@ class _DockerBackend(_ContainerBackendBase):
                                             capture_output=True,
                                             timeout=self._agconfig.sandbox.inspect_timeout_s,
                                         )
+                                        ancestors = []
+                                        for anc in diff_dir.parent.parents:
+                                            try:
+                                                if os.access(anc, os.R_OK | os.X_OK):
+                                                    break
+                                            except OSError:
+                                                pass
+                                            ancestors.append(anc)
+                                        if ancestors:
+                                            subprocess.run(
+                                                [
+                                                    "sudo",
+                                                    "-n",
+                                                    "chmod",
+                                                    "a+rX",
+                                                    *[str(a) for a in ancestors],
+                                                ],
+                                                capture_output=True,
+                                                timeout=self._agconfig.sandbox.inspect_timeout_s,
+                                            )
                                     except Exception as _e:
                                         # Best-effort: fold will see an unreadable dir and
                                         # degrade to None below rather than hard-failing.
@@ -476,7 +508,10 @@ class _DockerBackend(_ContainerBackendBase):
         → `<data_root>/overlay2/<cache-id>/diff/`."""
         layerdb_root = data_root / "image" / "overlay2" / "layerdb" / "sha256"
         try:
-            for entry in layerdb_root.iterdir():
+            # sorted(): iteration order is otherwise filesystem-dependent,
+            # which made the "skipped unreadable entry" warning fire or not
+            # fire depending on the host's directory-entry order.
+            for entry in sorted(layerdb_root.iterdir()):
                 try:
                     if (entry / "diff").read_text().strip() != diff_id:
                         continue
