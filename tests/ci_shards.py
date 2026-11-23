@@ -22,6 +22,7 @@ _SANDBOX_SHARD_FILES: "dict[str, list[str]]" = {
     # All remaining sandbox/harness files.
     "everything_else": [
         "tests/sandbox/test_container_backends.py",
+        "tests/sandbox/test_cpu_controller_probe.py",
         "tests/sandbox/test_chroot_backend.py",
         "tests/sandbox/test_docker_backend.py",
         "tests/sandbox/test_podman_backend.py",
@@ -48,6 +49,9 @@ _SANDBOX_SHARD_FILES: "dict[str, list[str]]" = {
         "tests/harness/test_traced_pty.py",
         "tests/harness/test_sandbox_mcp.py",
         "tests/harness/test_time_ctrl_linux.py",
+        "tests/harness/test_claude_prompt_ack.py",
+        "tests/harness/test_context_window.py",
+        "tests/harness/test_context_window_live.py",
         "tests/harness/test_protocol.py",
         "tests/harness/test_gpu_exec_gate_linux.py",
         "tests/harness/test_fast_resume.py",

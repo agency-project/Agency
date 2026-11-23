@@ -31,6 +31,7 @@ from ..configs.agconfig import (
     agconfig as agconfig_cls,
     agentconfig,
     harnessadapterconfig,
+    llmconfig,
     ptraceconfig,
     sandboxconfig,
 )
@@ -855,6 +856,7 @@ def main(argv: "list[str] | None" = None) -> None:
         args.engine_name,
         args.harness,
         agconfig=agconfig_cls(
+            llmconfig(provider=payload.get("llm_provider")),
             agentconfig(**payload.get("agent", {})),
             harnessadapterconfig(**payload.get("harness_adapter", {})),
             ptraceconfig(**payload.get("ptrace", {})),

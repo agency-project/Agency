@@ -96,29 +96,41 @@ class GrokDriver(_HookPtyDriver):
             return None
         return super()._stop_event(event, payload)
 
+    def begin_interrupt(self, handle):
+        self._interrupt_generation = handle.terminal_screen()[3]
+
     def interrupted(self, handle):
-        """Recognize Grok's restored composer draft as interrupt evidence."""
-        if self._last_prompt is None:
+        # Cancellation before the first response can restore the prompt
+        # without a turn-end hook. Evidence is either the restored draft in
+        # the composer or an idle footer over an empty composer -- the empty
+        # composer alone also exists during generation, so the cancel footer
+        # must be gone either way.
+        lines, _x, _y, generation = handle.terminal_screen()
+        if self._last_prompt is None or generation <= getattr(self, "_interrupt_generation", -1):
             return False
+        if "Ctrl+c:cancel" in lines:
+            return False
+        current = self._composer_line(handle)
         marker = self._last_prompt.split("\n", 1)[0]
         pasted = f"│ ❯ [Pasted: {len(self._last_prompt.splitlines())} lines]"
-        lines, _x, y, _generation = handle.terminal_screen()
         # Grok collapses a restored multiline paste into a token. The prompt
-        # marker then appears only in the old transcript.
-        return (
-            # The composer is empty while a turn waits for its response, so an
-            # empty one proves the interrupt only once the cancel footer is gone.
-            (self.ready(handle) and not any("Ctrl+c:cancel" in line for line in lines))
-            or any("│ ❯ " + marker in line for line in lines)
-            or pasted in lines[y]
+        # marker then appears only in the old transcript. An empty composer
+        # over an idle footer is also interrupt evidence: the same empty
+        # composer exists during generation, so the cancel footer check
+        # above is what rules that out.
+        draft = current.removeprefix("│ ❯").removesuffix("│").strip()
+        return any("Enter:send" in line for line in lines) and (
+            current.startswith("│ ❯ " + marker) or pasted in current or draft == ""
         )
 
     def clear_input(self, handle, wait_until):
+        # PtyExecution has observed a native cancellation event or the
+        # restored idle draft before calling this.
         # Grok restores a pre-response cancellation as a draft. Its idle
         # Ctrl+C clears that draft; Ctrl+U would trigger self-update.
         if self._last_prompt is None:
             return
-        wait_until(lambda: self.interrupted(handle), "restored Grok input")
+        wait_until(lambda: bool(self._composer_line(handle)), "restored Grok input")
         if not self.ready(handle):
             handle.write_terminal(b"\x03")
 

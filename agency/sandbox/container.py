@@ -975,12 +975,15 @@ class _ContainerBackendBase(agsandbox_backend):
         if self._virtual_gpu_count_requested > 0 and not self._agconfig.sandbox.gpu_passthrough:
             raise RuntimeError("GPU reservation is forbidden by this sandbox's CPU-only policy")
         gpu_flags = _gpu_flags(self._runtime) if self._agconfig.sandbox.gpu_passthrough else []
+        # Native harness supervision must also follow children that change UID
+        # (for example apt's _apt download worker). Parent/child ptrace alone
+        # does not permit reading their memory after the credential change.
+        gpu_flags += ["--cap-add=SYS_PTRACE"]
         if (
             storage is not None
             and self._agconfig.sandbox.checkpoint_fast_resume
             and storage.criu_ready
         ):
-            gpu_flags += ["--cap-add=SYS_PTRACE"]
             if self._runtime == "podman":
                 gpu_flags += [f"--init-path={storage.init_path}"]
             gpu_flags += ["--annotation", f"org.criu.config={storage.criu_config}"]
@@ -995,11 +998,8 @@ class _ContainerBackendBase(agsandbox_backend):
             limit_flags = []
             if self._agconfig.resources.idle_memory is not None:
                 limit_flags.append(f"--memory={self._agconfig.resources.idle_memory}")
-            if self._cfs_supported() and self._agconfig.resources.idle_cpus is not None:
-                # The daemon rejects a quota above the host's CPU count.
-                limit_flags.append(
-                    f"--cpus={min(self._agconfig.resources.idle_cpus, os.cpu_count())}"
-                )
+            if self._cfs_supported():
+                limit_flags.extend(self._cpu_limit_flags(self._agconfig.resources.idle_cpus))
             if self._agconfig.sandbox.cpuset_cpus is not None:
                 limit_flags.append(f"--cpuset-cpus={self._agconfig.sandbox.cpuset_cpus}")
             if self._agconfig.sandbox.cpuset_mems is not None:
@@ -1274,13 +1274,25 @@ class _ContainerBackendBase(agsandbox_backend):
         return self._name
 
     @staticmethod
+    def _cpu_limit_flags(cpus: float | None) -> list[str]:
+        if cpus is None:
+            return []
+        # Docker rejects --cpus above the daemon's CPU count, even though a
+        # CFS quota above physical capacity is valid (and simply nonbinding).
+        # Express the same cap directly so the default 8-CPU resting limit
+        # also works on smaller hosts. Use this for creation and live updates.
+        period = 100_000
+        return [f"--cpu-period={period}", f"--cpu-quota={int(cpus * period)}"]
+
+    @staticmethod
     def _cfs_supported() -> bool:
         """Return True if the kernel can enforce a CPU quota (cgroup v1 CFS or the cgroup v2 cpu controller)."""
         if os.path.exists(_CGROUP_V1_CFS_QUOTA):
             return True
+        # Unified cgroup hosts expose CPU quotas through their cpu controller,
+        # without the legacy cpu.cfs_quota_us path.
         try:
-            with open(_CGROUP_V2_CONTROLLERS, encoding="utf-8") as controllers:
-                return "cpu" in controllers.read().split()
+            return "cpu" in Path(_CGROUP_V2_CONTROLLERS).read_text().split()
         except OSError:
             return False
 
@@ -1463,7 +1475,7 @@ class _ContainerBackendBase(agsandbox_backend):
             return
         cmd = [self._runtime, "update"]
         if cpus is not None and self._cfs_supported():
-            cmd.append(f"--cpus={min(cpus, os.cpu_count())}")
+            cmd.extend(self._cpu_limit_flags(cpus))
         if memory is not None:
             cmd.append(f"--memory={memory}")
             if self._runtime == "docker":
