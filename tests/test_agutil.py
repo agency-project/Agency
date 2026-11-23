@@ -4,6 +4,7 @@ import os
 import signal
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +25,15 @@ def test_pinned_harness_python_fails_before_any_install(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="refusing package installation"):
         agutil.ensure_python_packages_locally(["cloudpickle"], install_missing=False)
+
+
+def test_pypi_probe_is_false_when_connection_raises():
+    """A connection failure must read as unreachable, not propagate --
+    the caller turns this into its own error message."""
+    from agency.utils.agutil import _can_reach_pypi_locally
+
+    with patch("socket.create_connection", side_effect=OSError("network unreachable")):
+        assert _can_reach_pypi_locally() is False
 
 
 def test_strip_thinking_removes_think_tag():

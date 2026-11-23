@@ -368,6 +368,19 @@ class _DockerBackend(_ContainerBackendBase):
                             flush=True,
                         )
                     else:
+                        # The unreferenced view is GC-eligible;
+                        # gc.root keeps it alive for this lookup.
+                        subprocess.run(
+                            ctr_n
+                            + [
+                                "snapshots",
+                                "label",
+                                view,
+                                "containerd.io/gc.root",
+                            ],
+                            capture_output=True,
+                            timeout=self._agconfig.sandbox.inspect_timeout_s,
+                        )
                         mounts = subprocess.run(
                             ctr_n + ["snapshots", "mounts", "/tmp/agency-ctr-unused", view],
                             capture_output=True,
@@ -401,6 +414,9 @@ class _DockerBackend(_ContainerBackendBase):
                                 # whole containerd tree.
                                 if ctr[:2] == ["sudo", "-n"]:
                                     try:
+                                        # -R opens the snapshot dir and its
+                                        # contents; ancestors need plain a+rX
+                                        # or the path to it stays untraversable.
                                         subprocess.run(
                                             [
                                                 "sudo",
@@ -413,6 +429,26 @@ class _DockerBackend(_ContainerBackendBase):
                                             capture_output=True,
                                             timeout=self._agconfig.sandbox.inspect_timeout_s,
                                         )
+                                        ancestors = []
+                                        for anc in diff_dir.parent.parents:
+                                            try:
+                                                if os.access(anc, os.R_OK | os.X_OK):
+                                                    break
+                                            except OSError:
+                                                pass
+                                            ancestors.append(anc)
+                                        if ancestors:
+                                            subprocess.run(
+                                                [
+                                                    "sudo",
+                                                    "-n",
+                                                    "chmod",
+                                                    "a+rX",
+                                                    *[str(a) for a in ancestors],
+                                                ],
+                                                capture_output=True,
+                                                timeout=self._agconfig.sandbox.inspect_timeout_s,
+                                            )
                                     except Exception as _e:
                                         # Best-effort: fold will see an unreadable dir and
                                         # degrade to None below rather than hard-failing.
@@ -476,7 +512,8 @@ class _DockerBackend(_ContainerBackendBase):
         → `<data_root>/overlay2/<cache-id>/diff/`."""
         layerdb_root = data_root / "image" / "overlay2" / "layerdb" / "sha256"
         try:
-            for entry in layerdb_root.iterdir():
+            # sorted() keeps warning behavior independent of FS entry order.
+            for entry in sorted(layerdb_root.iterdir()):
                 try:
                     if (entry / "diff").read_text().strip() != diff_id:
                         continue

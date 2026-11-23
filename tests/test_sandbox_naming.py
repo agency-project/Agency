@@ -60,9 +60,9 @@ class TestSandboxNaming:
         same literal agname twice must NOT collide into the same container
         identity. Anyone who genuinely needs to reference an existing
         sandbox must keep the object/backend itself around, not re-pass its
-        name string (see test_agsandbox.py's
-        test_ensure_started_reuses_running_container for the supported way
-        to do that)."""
+        name string (see tests/sandbox/test_all_backends.py's
+        test_second_view_reuses_the_workspace_instead_of_wiping_it for the
+        supported way to do that)."""
         sb1 = _naming_sandbox("shared-agent")
         sb2 = _naming_sandbox("shared-agent")
         assert sb1._name != sb2._name

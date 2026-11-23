@@ -3,7 +3,7 @@
 Tier 1 (pure logic, no real process) tests seccomp filter construction and
 policy handling. Tier 2 tests (marked `ptrace`) launch
 real traced processes and are skipped when `ptrace_available()` returns
-False -- mirroring `tests/test_agsandbox.py`'s `docker`/`nvidia_smi` markers
+False -- mirroring the capability gates in `tests/sandbox/conftest.py`
 and `sandbox/chroot.py`'s `chroot_available()` convention: a live
 smoke test, not just a config/capability check, is the authoritative signal.
 """

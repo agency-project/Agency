@@ -28,7 +28,115 @@ jobs:
 
       - uses: pre-commit/action@v3.0.1
 
-  pytest:
+  # Sandbox + harness tests. These are sensitive to CPU contention
+  # (cgroup throughput assertions, wall-clock budgets, ptrace timing), so
+  # every shard runs serially on its own runner -- never with xdist.
+  # Three shards: the x3-backend parametrized contract file was split into
+  # two (~11 minutes of pytest each in CI); its two halves get one runner
+  # each, and everything else shares the third. The chroot filesystem
+  # template is cached per runner, so no shard rebuilds it after the
+  # first run.
+  sandbox:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [all_backends_contract, all_backends_checkpoints, everything_else]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install -e .
+          uv pip install -e ".[dev]"
+
+      - name: Install harness CLIs
+        # Each of the 8 shards downloads the same harness packages from
+        # external CDNs; concurrent bursts occasionally hit TLS handshake
+        # timeouts, so retry the whole install before failing the shard.
+        run: |
+          for attempt in 1 2 3; do
+            uv run agency install-harnesses && break
+            echo "install-harnesses attempt $attempt failed; retrying..."
+            sleep 10
+            if [ "$attempt" = "3" ]; then exit 1; fi
+          done
+
+      - name: Install sandbox backends (podman, docker, chroot)
+        run: |
+          sudo apt-get update
+          # debootstrap: builds the one-time chroot filesystem template
+          # (run under the runner's passwordless sudo by the template
+          # builder on first use).
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs debootstrap
+          # The chroot backend needs unprivileged user namespaces, which
+          # Ubuntu 24.04 restricts through AppArmor by default.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          docker --version
+          podman --version
+
+      - name: Pull sandbox base image into docker and podman
+        # Docker and podman keep separate image stores; pull once so tests
+        # do not each pay for (or flake on) the download.
+        run: |
+          docker pull docker.io/library/python:3.12-slim
+          podman pull docker.io/library/python:3.12-slim
+
+      - name: Verify all three sandbox backends are usable
+        # The sandbox tests skip a backend that is unusable on the host.
+        # Fail loudly here instead, so a broken runner cannot turn a whole
+        # backend's coverage into silent skips.
+        run: |
+          docker info > /dev/null
+          podman info > /dev/null
+          uv run python - <<'EOF'
+          from tests.sandbox.conftest import ALL_BACKENDS, backend_available
+
+          missing = [kind for kind in ALL_BACKENDS if not backend_available(kind)]
+          assert not missing, f"sandbox backends unusable on this runner: {missing}"
+          print("usable sandbox backends:", ", ".join(ALL_BACKENDS))
+          EOF
+
+      - name: Restore the chroot filesystem template from cache
+        # The template (~500MB) is keyed on the tool-set content digest the
+        # builder itself derives (sandbox_tools.py's package lists), so a
+        # changed tool set produces a new key and a rebuild. Restoring it
+        # turns the minutes-long debootstrap build into a short download;
+        # the build step below runs only on a cache miss. The cached path
+        # is the builder's own cache location (runner uid is 1001), so a
+        # restored template is found without any relinking.
+        id: template_cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/agency-1001/chroot_filesystem_templates
+          key: agency-chroot-template-${{ runner.os }}-${{ hashFiles('agency/sandbox/sandbox_tools.py') }}
+          restore-keys: |
+            agency-chroot-template-${{ runner.os }}-
+
+      - name: Build the chroot filesystem template (cache miss only)
+        if: steps.template_cache.outputs.cache-hit != 'true'
+        run: uv run python -c "from agency.sandbox.chroot_template import chroot_template_dir; assert chroot_template_dir() is not None"
+
+      - name: Run pytest (shard ${{ matrix.shard }})
+        # -rs lists every skipped test with its reason, so any backend that
+        # silently stopped running shows up in the log.
+        run: uv run pytest -rs $(uv run python -c "from tests.ci_shards import sandbox_shard_files; print(' '.join(sandbox_shard_files('${{ matrix.shard }}')))")
+
+  # Everything outside tests/sandbox and tests/harness: no container
+  # lifecycles, no cgroup throughput assertions, no wall-clock budgets --
+  # safe to run in parallel with pytest-xdist. -n auto spawns one worker
+  # per core, so this job automatically scales if the runner size
+  # increases later.
+  general:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,10 +156,17 @@ jobs:
           uv pip install -e ".[dev]"
 
       - name: Install harness CLIs
-        # The versions pinned in pyproject.toml ([tool.agency.harnesses]), put
-        # where Agency looks for them (~/.agency/harnesses): self-contained
-        # binaries, with no Node.js needed in the sandbox image.
-        run: uv run agency install-harnesses
+        # Needed by test_golden_execution, which runs real containers with
+        # pinned harness CLIs (it fails rather than skips under CI).
+        # Same retry discipline as the sandbox shards: the download comes
+        # from an external CDN that occasionally times out under bursts.
+        run: |
+          for attempt in 1 2 3; do
+            uv run agency install-harnesses && break
+            echo "install-harnesses attempt $attempt failed; retrying..."
+            sleep 10
+            if [ "$attempt" = "3" ]; then exit 1; fi
+          done
 
-      - name: Run pytest
-        run: uv run pytest
+      - name: Run pytest in parallel
+        run: uv run pytest -rs -n auto tests --ignore=tests/sandbox --ignore=tests/harness

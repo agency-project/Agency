@@ -187,7 +187,7 @@ def test_detect_gpus_rocm_smi_cvd_filters_via_hip_visible_devices(monkeypatch):
 # `rocm-smi --showbus` (subprocess.run) and the /sys/class/drm/*/device
 # symlink resolution (os.path.realpath) so they run identically with or
 # without real ROCm hardware -- see TestAmdRenderNodeLiveHardware in
-# tests/sandbox/test_container.py for the check against real
+# tests/sandbox/test_container_backends.py for the check against real
 # hardware.
 # ---------------------------------------------------------------------------
 

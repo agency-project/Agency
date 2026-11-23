@@ -803,6 +803,12 @@ class agent:
                 # container.tar is in -- a chroot snapshot directory and a
                 # docker/podman image tag are unrelated formats.
                 state["sandbox_image_kind"] = sandbox.image_kind
+                # docker and podman share the "container" kind but their image
+                # stores are separate: record which one produced this
+                # checkpoint so load() restores through the same runtime.
+                _runtime = getattr(type(sandbox._backend), "_runtime", "")
+                if _runtime:
+                    state["sandbox_runtime"] = _runtime
             if checkpoint_context.harness_sessions:
                 # Session continuity travels with the agent's own checkpoint, not
                 # with container.tar, so it remains available regardless of which
@@ -872,9 +878,10 @@ class agent:
 
         checkpoint: str | None = None
         image_kind = state.get("sandbox_image_kind", "container")
+        image_runtime = state.get("sandbox_runtime") or None
         if image_bytes is not None:
             _load_timeout = (agconfig or agconfig_cls()).agent.checkpoint_load_timeout_s
-            backend_cls = agSandbox.backend_for_image_kind(image_kind)
+            backend_cls = agSandbox.backend_for_image_kind(image_kind, image_runtime)
             backend_cls.import_image(image_bytes, _load_timeout)
             original_tag = f"agency/ckpt-{state['agname']}"
             backend_cls.tag_image(original_tag, image_tag)
@@ -923,6 +930,11 @@ class agent:
             # chroot existed.
             sb_cfg = sb_cfg.clone()
             sb_cfg.sandbox.backend = "chroot"
+        elif checkpoint and image_runtime in ("docker", "podman"):
+            # Same for a docker/podman checkpoint: the image lives in the
+            # recorded runtime's store, not necessarily the auto-detected one.
+            sb_cfg = sb_cfg.clone()
+            sb_cfg.sandbox.backend = image_runtime
         ag.sandbox = (
             agSandbox(ag.agname, checkpoint_image=checkpoint, agconfig=sb_cfg)
             if checkpoint

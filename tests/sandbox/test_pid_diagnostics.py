@@ -38,13 +38,13 @@ def test_classification_uses_identity_and_liveness(current, expected):
     assert diag.classify_watched(s)[0]["classification"] == expected
 
 
-def test_probe_does_not_prune_watched_pids_or_launch_a_stopped_container():
+def test_probe_does_not_prune_watched_pids_or_launch_a_stopped_container(container_runtime):
     backend = SimpleNamespace(
         _watched_pids={42: 1},
         _baseline_pids={1},
         _daemon_pids=set(),
         _ptrace_managed_pids=set(),
-        _runtime="docker",
+        _runtime=container_runtime,
         _name="test",
         _run=Mock(return_value=SimpleNamespace(stdout=json.dumps({"processes": {}}))),
     )
@@ -53,16 +53,16 @@ def test_probe_does_not_prune_watched_pids_or_launch_a_stopped_container():
     assert result["pending_background_work"] is True
     assert result["watched_evidence"][0]["classification"] == "absent_at_decision_probe"
     assert backend._watched_pids == original
-    assert backend._run.call_args.args[0][:3] == ["docker", "exec", "test"]
+    assert backend._run.call_args.args[0][:3] == [container_runtime, "exec", "test"]
 
 
-def test_failed_probe_does_not_claim_pids_are_absent():
+def test_failed_probe_does_not_claim_pids_are_absent(container_runtime):
     backend = SimpleNamespace(
         _watched_pids={42: 1},
         _baseline_pids=set(),
         _daemon_pids=set(),
         _ptrace_managed_pids=set(),
-        _runtime="docker",
+        _runtime=container_runtime,
         _name="test",
         _run=Mock(side_effect=TimeoutError),
     )

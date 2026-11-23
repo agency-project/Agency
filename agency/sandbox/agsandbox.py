@@ -454,8 +454,8 @@ class agSandbox:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def backend_for_image_kind(kind: str) -> type:
-        return backend_for_image_kind(kind)
+    def backend_for_image_kind(kind: str, runtime: "str | None" = None) -> type:
+        return backend_for_image_kind(kind, runtime)
 
     @staticmethod
     def tag_image(source: str, dest: str) -> None:

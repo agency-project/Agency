@@ -212,6 +212,9 @@ class sandboxconfig(confignamespace):
     file_io_timeout_s: float = 120
     image_timeout_s: float = 120
     commit_timeout_s: float = 120
+    # One-time build of the shared prepared sandbox image (system packages
+    # plus the harness daemon's Python packages installed on the base image).
+    prepared_image_build_timeout_s: float = 900
     keyring_wait_timeout_s: float = 120
     unkillable_child_grace_s: float = 10
     container_limit_floor: int = 4

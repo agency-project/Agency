@@ -270,9 +270,10 @@ _CHROOT_STATE_ROOT = agency_tmp_dir() / agency_run_dir_name() / "sandboxes"
 _CHROOT_JAILS_DIR = _CHROOT_STATE_ROOT / "jails"
 _CHROOT_SNAPSHOTS_DIR = _CHROOT_STATE_ROOT / "snapshots"
 
-# Host directories bind-mounted read-only into every jail so common
-# interpreters/tools (python, bash, coreutils, shared libs) are usable
-# without needing a separate root filesystem image.
+# Host directories formerly bind-mounted read-only into every jail. The
+# jail now owns a full filesystem copied from the shared template
+# (chroot_template.py), so these are no longer mounted; kept only because
+# checkpoint/restore paths and tests reference the tuple.
 _CHROOT_RO_BASE_DIRS = ("bin", "sbin", "lib", "lib32", "lib64", "usr", "etc")
 
 # /dev cannot be bind-mounted as a whole directory (devtmpfs bind-mounting
@@ -428,6 +429,9 @@ class _ChrootBackend(agsandbox_backend):
         self._mounts = mounts
         self._root = _CHROOT_JAILS_DIR / name
         self._workspace = self._root / "workspace"
+        from .chroot_template import start_chroot_template_build
+
+        start_chroot_template_build()
 
     def change_config(self, agconfig: "agconfig_cls | None") -> None:
         self._agconfig = agconfig if agconfig is not None else agconfig_cls()
@@ -586,34 +590,69 @@ class _ChrootBackend(agsandbox_backend):
                 )
 
     def _ensure_started(self) -> None:
-        """Create the workspace on first use (restoring from
-        `_checkpoint_image` if given); ground truth is the directory's
-        existence on disk, not a cached flag."""
+        """Create the jail's own filesystem on first use (restoring from
+        `_checkpoint_image` if given); ground truth is the workspace's
+        existence on disk, not a cached flag. The jail's system directories
+        come from the shared filesystem template -- a full copy per jail,
+        not host bind mounts -- so the sandbox owns its tools and can write
+        anywhere inside its root."""
         if not self._workspace.is_dir():
             self._materialize_workspace(self._checkpoint_image)
 
     def _materialize_workspace(self, tag: "str | None") -> None:
-        """Replace the current workspace contents with a copy of *tag*'s
-        snapshot, or an empty workspace if *tag* is None or has no snapshot."""
-        self._root.mkdir(parents=True, exist_ok=True)  # cp -a needs the parent to exist
-        if self._workspace.exists():
-            shutil.rmtree(self._workspace, ignore_errors=True)
+        """Build the jail's filesystem: copy the shared template (a complete
+        root filesystem with the basic tool set), then lay *tag*'s workspace
+        snapshot over it, or start with an empty workspace."""
+        from .chroot_template import chroot_template_dir
+
+        template = chroot_template_dir()
+        if template is None:
+            raise RuntimeError(
+                "The chroot filesystem template is not available on this host: "
+                "debootstrap is missing, or passwordless sudo is unavailable to "
+                "run it as a non-root process. Install debootstrap (and enable "
+                "passwordless sudo for the sandbox user) so the one-time "
+                "template can be built, or use a container backend instead."
+            )
+        if self._root.is_dir() and any(self._root.iterdir()):
+            shutil.rmtree(self._root, ignore_errors=True)
+        self._root.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[agsandbox] Copying the sandbox filesystem template into the jail {self._name}...",
+            file=__import__("sys").stderr,
+            flush=True,
+        )
+        subprocess.run(
+            ["cp", "-a", "--reflink=auto", f"{template}/.", f"{self._root}/"],
+            check=True,
+        )
+        shutil.rmtree(self._root / "workspace", ignore_errors=True)
+        self._workspace.mkdir(parents=True, exist_ok=True)
         snapshot_dir = _CHROOT_SNAPSHOTS_DIR / _sanitize_tag(tag) if tag else None
         if snapshot_dir is not None and snapshot_dir.is_dir():
-            subprocess.run(
-                ["cp", "-a", "--reflink=auto", str(snapshot_dir), str(self._workspace)],
-                check=True,
-            )
-        else:
-            self._workspace.mkdir(parents=True, exist_ok=True)
+            for entry in snapshot_dir.iterdir():
+                subprocess.run(
+                    [
+                        "cp",
+                        "-a",
+                        "--reflink=auto",
+                        str(entry),
+                        str(self._workspace / entry.name),
+                    ],
+                    check=True,
+                )
 
     def _setup_lines(self) -> "list[str]":
-        """Shell lines that materialize the jail's directory structure and
-        bind mounts, run unprivileged inside the `unshare --user
-        --map-root-user --mount` namespace before anything else (chroot,
-        /proc reads) happens. Shared by `_build_jail_script()` and
-        `_exec_with_pid_tracking()` so the two entry points into a jail
-        agree on what it looks like.
+        """Shell lines that bind the outside world into the jail, run
+        unprivileged inside the `unshare --user --map-root-user --mount`
+        namespace before anything else (chroot, /proc reads) happens.
+        Shared by `_build_jail_script()` and `_exec_with_pid_tracking()` so
+        the two entry points into a jail agree on what it looks like.
+
+        The jail's own filesystem comes from the shared template (copied at
+        start by `_materialize_workspace`), so nothing from the host system
+        directories is mounted -- only device files, the caller-configured
+        mounts, and the fixed directory skeleton below.
 
         Does not attempt to mount /proc inside the jail -- see module
         docstring for why that's refused by the kernel for both a fresh
@@ -621,15 +660,7 @@ class _ChrootBackend(agsandbox_backend):
         instead (`_read_proc_table()`/`_exec_with_pid_tracking()`).
         """
         root = str(self._root)
-        lines = [f"mkdir -p {shlex.quote(root)}"]
-        for d in _CHROOT_RO_BASE_DIRS:
-            host_path = f"/{d}"
-            if not os.path.isdir(host_path):
-                continue
-            jail_path = f"{root}/{d}"
-            lines.append(f"mkdir -p {shlex.quote(jail_path)}")
-            lines.append(f"mount --bind {shlex.quote(host_path)} {shlex.quote(jail_path)}")
-            lines.append(f"mount -o remount,bind,ro {shlex.quote(jail_path)} 2>/dev/null || true")
+        lines: "list[str]" = []
         # /dev: individual per-file bind mounts of the device files most
         # programs assume exist, directly on a plain mkdir -- NOT inside an
         # intermediate tmpfs. A freshly created mount (tmpfs included) gets
@@ -671,7 +702,7 @@ class _ChrootBackend(agsandbox_backend):
             jail_path = f"{root}{container}"
             lines.append(f"mkdir -p {shlex.quote(jail_path)}")
             lines.append(f"mkdir -p {shlex.quote(host)}")
-            lines.append(f"mount --bind {shlex.quote(host)} {shlex.quote(jail_path)}")
+            lines.append(f"mount --rbind {shlex.quote(host)} {shlex.quote(jail_path)}")
             if mode == "ro":
                 lines.append(
                     f"mount -o remount,bind,ro {shlex.quote(jail_path)} 2>/dev/null || true"

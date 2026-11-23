@@ -1,24 +1,37 @@
+"""The real-GPU lease bookkeeping every backend inherits from
+``agsandbox_backend`` (agency/sandbox/base.py): holders, release when idle,
+release by holder, and the facade's ``acquire_real_gpus_for``.
+
+Nothing here is specific to a backend, so each test runs for chroot, docker and
+podman (``backend_kind``, never skipped: no daemon is touched). The per-backend
+*gating* of the GPU release on stop()/rm_container()/destroy() differs and is
+tested in the family files (test_container_backends.py, test_chroot_backend.py).
+"""
+
 from __future__ import annotations
 
 import time
 from unittest.mock import patch
 
+import pytest
 
 from agency.sandbox import base as sandbox_base
 from agency.sandbox.agsandbox import agSandbox
-from agency.sandbox.docker import _DockerBackend
-from agency.sandbox.podman import _PodmanBackend
+from tests.sandbox.conftest import make_backend
 
 
-def _backend(cls=_DockerBackend):
-    return cls(
-        "agent",
-        name="real-gpu-lease-test",
-        checkpoint_image=None,
-        base_image="img",
-        mounts={},
-        agconfig=None,
-    )
+@pytest.fixture(autouse=True)
+def _kind(backend_kind):
+    """Expose the parametrized backend kind to the module-level ``_backend``."""
+    global _KIND
+    _KIND = backend_kind
+
+
+_KIND = "docker"
+
+
+def _backend():
+    return make_backend(_KIND, agname="agent", name="real-gpu-lease-test")
 
 
 def _reserved(backend, gpu_ids=None):
@@ -144,59 +157,6 @@ class TestReleaseRealGpuWhenIdle:
         backend.release_virtual_and_real_resources(None)
         assert backend._real_gpu_holders == set()
         assert backend._virtual_gpu_count_requested == 0
-
-
-class TestStopReleasesRealGpus:
-    def test_stopping_the_container_gives_the_held_gpus_back(self):
-        backend = _backend()
-        released = _reserved(backend)
-        backend._hold_real_gpus()
-        with patch.object(backend, "_container_running", side_effect=[True, False]):
-            with patch.object(backend, "_run"), patch.object(backend, "_release_runtime_slot"):
-                backend._stop_image()
-        assert released == [[0]]
-        assert backend._real_gpu_ids == []
-
-    def test_an_already_stopped_container_still_gives_the_held_gpus_back(self):
-        backend = _backend()
-        released = _reserved(backend)
-        backend._hold_real_gpus()
-        with patch.object(backend, "_container_running", return_value=False):
-            with (
-                patch.object(backend, "_run") as run,
-                patch.object(backend, "_release_runtime_slot") as release_slot,
-            ):
-                backend._stop_image()
-        assert released == [[0]]
-        run.assert_not_called()
-        release_slot.assert_not_called()
-
-
-class TestUpdateLimitsMemorySwap:
-    def _commands(self, cls, **limits):
-        backend = _backend(cls)
-        commands = []
-        with patch.object(backend, "_container_running", return_value=True):
-            with patch.object(backend, "_cfs_supported", return_value=True):
-                with patch.object(
-                    backend, "_run", side_effect=lambda cmd, **kw: commands.append(cmd)
-                ):
-                    backend.update_limits(**limits)
-        return commands
-
-    def test_docker_sets_memory_swap_with_memory(self):
-        (cmd,) = self._commands(_DockerBackend, cpus=2.0, memory="8192m")
-        assert "--memory=8192m" in cmd
-        assert "--memory-swap=8192m" in cmd
-
-    def test_docker_cpus_only_sets_no_memory_flags(self):
-        (cmd,) = self._commands(_DockerBackend, cpus=2.0)
-        assert not any(arg.startswith("--memory") for arg in cmd)
-
-    def test_podman_does_not_set_memory_swap(self):
-        (cmd,) = self._commands(_PodmanBackend, memory="8192m")
-        assert "--memory=8192m" in cmd
-        assert not any(arg.startswith("--memory-swap") for arg in cmd)
 
 
 class TestReleaseRealGpuHolder:
