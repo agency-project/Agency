@@ -424,9 +424,7 @@ def build_save_archive_from_base_save(
     ]
     manifest_bytes = json.dumps(manifest).encode()
 
-    with tarfile.open(base_save_archive, "r") as base, tarfile.open(
-        output_path, "w"
-    ) as out:
+    with tarfile.open(base_save_archive, "r") as base, tarfile.open(output_path, "w") as out:
         for entry in base_layer_entries:
             # Copy the real base-layer blobs; skip the legacy per-layer
             # directories and the old repositories file -- the renamed
@@ -436,7 +434,9 @@ def build_save_archive_from_base_save(
             if extracted is None:
                 continue
             entry = copy.copy(entry)
-            entry.name = f"blobs/sha256/{entry.name.lstrip('./').split('/')[-1].removesuffix('.tar')}"
+            entry.name = (
+                f"blobs/sha256/{entry.name.lstrip('./').split('/')[-1].removesuffix('.tar')}"
+            )
             entry.uid = 0
             entry.gid = 0
             entry.uname = ""

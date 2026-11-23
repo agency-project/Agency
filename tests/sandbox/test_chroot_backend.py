@@ -1325,7 +1325,7 @@ class TestJailFilesystem:
     def test_the_template_provides_the_harness_python_packages(self, sb):
         output, rc = sb.exec(
             "python3 -c 'import fastapi, uvicorn, openai, httpx, mcp, "
-            "pyseccomp, cloudpickle, pyte; print(\"packages-ok\")'"
+            'pyseccomp, cloudpickle, pyte; print("packages-ok")\''
         )
         assert (rc, output.strip()) == (0, "packages-ok"), output
 

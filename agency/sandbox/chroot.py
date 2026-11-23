@@ -618,8 +618,7 @@ class _ChrootBackend(agsandbox_backend):
             shutil.rmtree(self._root, ignore_errors=True)
         self._root.mkdir(parents=True, exist_ok=True)
         print(
-            f"[agsandbox] Copying the sandbox filesystem template into the jail "
-            f"{self._name}...",
+            f"[agsandbox] Copying the sandbox filesystem template into the jail {self._name}...",
             file=__import__("sys").stderr,
             flush=True,
         )

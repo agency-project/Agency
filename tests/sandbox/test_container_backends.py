@@ -3023,9 +3023,7 @@ class TestCheckpointAccumulator:
                 return self._inspect_config()
             if args[1] == "save" and base_save_tar is not None:
                 if "-o" in args:
-                    Path(args[args.index("-o") + 1]).write_bytes(
-                        base_save_tar.read_bytes()
-                    )
+                    Path(args[args.index("-o") + 1]).write_bytes(base_save_tar.read_bytes())
                 return _Done(stdout=base_save_tar.read_bytes())
             return _Done()
 
