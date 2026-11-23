@@ -368,6 +368,25 @@ class _DockerBackend(_ContainerBackendBase):
                             flush=True,
                         )
                     else:
+                        # The view snapshot is unreferenced (no image, container,
+                        # or lease points at it), so containerd's GC collects it
+                        # if a pass runs between `view` and `mounts` -- which
+                        # dockerd's per-commit image churn triggers
+                        # intermittently, degrading the fast path to
+                        # export/import. `containerd.io/gc.root` marks it as a
+                        # GC root for the brief lookup window; `snapshots rm`
+                        # in the finally-block releases it immediately after.
+                        subprocess.run(
+                            ctr_n
+                            + [
+                                "snapshots",
+                                "label",
+                                view,
+                                "containerd.io/gc.root",
+                            ],
+                            capture_output=True,
+                            timeout=self._agconfig.sandbox.inspect_timeout_s,
+                        )
                         mounts = subprocess.run(
                             ctr_n + ["snapshots", "mounts", "/tmp/agency-ctr-unused", view],
                             capture_output=True,
