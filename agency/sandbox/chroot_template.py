@@ -276,14 +276,16 @@ def start_chroot_template_build() -> None:
     """Kick the template build off in a background thread (once per
     process), so the minutes-long first build overlaps with other startup
     work instead of blocking the first jail start. `chroot_template_dir()`
-    blocks on the same lock if it is still running then."""
+    blocks on the same lock if it is still running then. Uses
+    `agprof.spawn_traced()` (not a bare Thread) so the thread is visible
+    to the profiler's thread tracking."""
     global _build_thread
     with _build_thread_lock:
         if _build_thread is not None and _build_thread.is_alive():
             return
-        _build_thread = threading.Thread(
-            target=chroot_template_dir, name="agency-chroot-template-build", daemon=True
-        )
+        from ..observability.profiler import agprof
+
+        _build_thread = agprof.spawn_traced(chroot_template_dir, daemon=True)
         _build_thread.start()
 
 
