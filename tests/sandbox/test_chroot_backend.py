@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -318,6 +319,15 @@ class TestChrootSnapshots:
         return sb
 
     @staticmethod
+    def _template():
+        from agency.sandbox.chroot_template import chroot_template_dir
+
+        template = chroot_template_dir()
+        if template is None:
+            pytest.skip("chroot filesystem template not available on this host")
+        return template
+
+    @staticmethod
     def _snapshot(tag):
         return _CHROOT_SNAPSHOTS_DIR / _sanitize_tag(tag)
 
@@ -364,6 +374,7 @@ class TestChrootSnapshots:
         assert [p.name for p in _CHROOT_SNAPSHOTS_DIR.iterdir()] == [snap.name]
 
     def test_a_new_backend_materializes_its_workspace_from_the_checkpoint(self):
+        self._template()
         first = self._started()
         (first._workspace / "f.txt").write_text("carried")
         first.commit("agency/seed")
@@ -374,6 +385,7 @@ class TestChrootSnapshots:
         assert (self._snapshot("agency/seed") / "f.txt").read_text() == "carried"
 
     def test_an_unknown_checkpoint_tag_gives_an_empty_workspace(self):
+        self._template()
         sb = _make_backend(checkpoint_image="agency/never-committed")
         sb._ensure_started()
         assert sb._workspace.is_dir() and list(sb._workspace.iterdir()) == []
@@ -386,6 +398,7 @@ class TestChrootSnapshots:
         assert (sb._workspace / "live.txt").read_text() == "live"
 
     def test_restore_replaces_the_workspace_and_stops_tracked_processes(self):
+        self._template()
         sb = self._started()
         (sb._workspace / "f.txt").write_text("snap")
         sb.commit("agency/r")
@@ -1143,32 +1156,28 @@ class TestExecWithPidTracking:
 
 
 # ---------------------------------------------------------------------------
-# The jail setup script (_setup_lines / _build_jail_script). Mounts use
-# --rbind: a bare ``mount --bind`` of a base directory failed with "wrong fs
-# type" when the host root itself was an overlayfs (a sandbox started inside a
-# container), while --rbind works there. Setup output and failures must never
-# reach the caller or abort the command.
+# The jail setup script (_setup_lines / _build_jail_script). The jail owns a
+# full filesystem copied from the shared template; setup only binds in
+# device files and caller-configured mounts. Mounts use --rbind: a bare
+# ``mount --bind`` of a directory failed with "wrong fs type" when the host
+# root itself was an overlayfs (a sandbox started inside a container), while
+# --rbind works there. Setup output and failures must never reach the caller
+# or abort the command.
 # ---------------------------------------------------------------------------
 
 
-def _lines(sb=None, *, host_dirs=None):
+def _lines(sb=None):
     sb = sb or _make_backend()
-    present = set(_CHROOT_RO_BASE_DIRS) if host_dirs is None else set(host_dirs)
-    with patch(
-        "agency.sandbox.chroot.os.path.isdir",
-        side_effect=lambda p: p.lstrip("/") in present,
-    ):
-        return sb, sb._setup_lines()
+    return sb, sb._setup_lines()
 
 
 class TestJailSetupLines:
-    def test_every_base_directory_is_rbind_mounted_then_remounted_read_only(self):
-        sb, lines = _lines()
-        root = str(sb._root)
-        for d in _CHROOT_RO_BASE_DIRS:
-            i = lines.index(f"mount --rbind /{d} {root}/{d}")
-            assert lines[i - 1] == f"mkdir -p {root}/{d}"
-            assert lines[i + 1] == f"mount -o remount,bind,ro {root}/{d} 2>/dev/null || true"
+    def test_no_host_system_directory_is_mounted_into_the_jail(self):
+        """The jail owns a full filesystem copied from the shared template;
+        host system directories must never be mounted over it."""
+        _sb, lines = _lines()
+        system_mounts = [l for l in lines if re.match(r"mount --rbind /(?!dev/)", l)]
+        assert system_mounts == []
 
     def test_a_bare_bind_is_never_used_for_directories(self):
         """The overlay-root regression: ``mount --bind`` on a directory."""
@@ -1179,22 +1188,18 @@ class TestJailSetupLines:
     def test_the_read_only_remount_may_fail_without_failing_setup(self):
         _sb, lines = _lines()
         remounts = [l for l in lines if "remount" in l]
-        assert remounts and all(l.endswith("2>/dev/null || true") for l in remounts)
+        user_ro_mounts = [l for l in lines if "remount,bind,ro" in l]
+        assert all(l.endswith("2>/dev/null || true") for l in user_ro_mounts)
+        assert (remounts == user_ro_mounts) or (remounts == [])
 
-    def test_base_directories_missing_on_the_host_are_skipped(self):
-        sb, lines = _lines(host_dirs={"usr", "bin"})
-        joined = "\n".join(lines)
-        assert f"mount --rbind /usr {sb._root}/usr" in joined
-        assert "/lib64" not in joined and "/lib32" not in joined and "/etc " not in joined
-
-    def test_user_mounts_are_rbind_mounted_after_the_base_directories(self, tmp_path):
+    def test_user_mounts_are_rbind_mounted(self, tmp_path):
         rw, ro = tmp_path / "rw", tmp_path / "ro"
         sb = _make_backend(mounts={"a": (str(rw), "/data", "rw"), "b": (str(ro), "/ro/x", "ro")})
         _sb, lines = _lines(sb)
         root = str(sb._root)
         i_rw = lines.index(f"mount --rbind {rw} {root}/data")
         i_ro = lines.index(f"mount --rbind {ro} {root}/ro/x")
-        assert lines.index(f"mount --rbind /etc {root}/etc") < i_rw < i_ro
+        assert i_rw < i_ro
         assert f"mkdir -p {rw}" in lines[:i_rw] and f"mkdir -p {root}/ro/x" in lines[:i_ro]
         assert not any(l.startswith(f"mount -o remount,bind,ro {root}/data") for l in lines)
         assert lines[i_ro + 1] == f"mount -o remount,bind,ro {root}/ro/x 2>/dev/null || true"
@@ -1281,27 +1286,48 @@ class TestJailFilesystem:
         sb.destroy()
 
     @pytest.mark.parametrize("base", _CHROOT_RO_BASE_DIRS)
-    def test_read_only_base_directories_reject_writes_from_inside_the_jail(self, sb, base):
+    def test_system_directories_are_writable_own_copies_not_host_mounts(self, sb, base):
+        """The jail owns its filesystem (a template copy), so system
+        directories accept writes and stay isolated from the host: a file
+        created inside the jail must not appear on the host."""
         if not os.path.isdir(f"/{base}"):
-            pytest.skip(f"/{base} does not exist on this host")
-        marker = f"agency-ro-probe-{uuid.uuid4().hex[:8]}"
-        output, rc = sb.exec(f"touch /{base}/{marker}; echo rc=$?")
-        assert "rc=0" not in output, f"write to /{base} succeeded inside the jail: {output}"
-        assert "Read-only file system" in output, output
-        assert not os.path.exists(f"/{base}/{marker}")
+            pytest.skip(f"/{base} does not exist in the template")
+        marker = f"agency-write-probe-{uuid.uuid4().hex[:8]}"
+        output, rc = sb.exec(f"touch /{base}/{marker} && echo rc=0")
+        assert rc == 0, f"write to /{base} failed inside the jail: {output}"
+        assert "rc=0" in output, output
+        assert not os.path.exists(f"/{base}/{marker}"), (
+            f"file written inside the jail leaked to the host /{base}"
+        )
 
-    def test_an_existing_base_file_cannot_be_modified_either(self, sb):
-        before = os.stat("/etc/passwd").st_size
-        output, _rc = sb.exec("echo x >> /etc/passwd; echo rc=$?")
-        assert "rc=0" not in output, output
-        assert os.stat("/etc/passwd").st_size == before
+    def test_an_existing_system_file_is_isolated_from_the_host(self, sb):
+        output, _rc = sb.exec("echo jail-only-line >> /etc/passwd; echo rc=$?")
+        assert "rc=0" in output, output
+        assert "jail-only-line" not in Path("/etc/passwd").read_text()
 
-    def test_the_hosts_interpreters_are_visible_and_executable(self, sb):
-        """Regression for the rbind change: /usr/bin/bash must be in the jail."""
+    def test_the_templates_interpreters_are_visible_and_executable(self, sb):
         output, rc = sb.exec("test -x /usr/bin/bash && /usr/bin/bash -c 'echo visible'")
         assert (rc, output.strip()) == (0, "visible")
         output, rc = sb.exec("ls /usr/bin | wc -l")
         assert rc == 0 and int(output.strip()) > 10
+
+    def test_the_template_provides_the_basic_tool_set(self, sb):
+        # ps is installed but cannot run inside the jail (no procfs by
+        # design, unlike container sandboxes); its presence is checked
+        # instead of its exit.
+        output, rc = sb.exec(
+            "python3 --version >/dev/null && python --version >/dev/null && "
+            "git --version >/dev/null && curl --version >/dev/null && "
+            "test -x /usr/bin/ps && echo tools-ok"
+        )
+        assert (rc, output.strip()) == (0, "tools-ok"), output
+
+    def test_the_template_provides_the_harness_python_packages(self, sb):
+        output, rc = sb.exec(
+            "python3 -c 'import fastapi, uvicorn, openai, httpx, mcp, "
+            "pyseccomp, cloudpickle, pyte; print(\"packages-ok\")'"
+        )
+        assert (rc, output.strip()) == (0, "packages-ok"), output
 
     def test_dev_has_the_standard_device_files_and_they_open(self, sb):
         output, rc = sb.exec(

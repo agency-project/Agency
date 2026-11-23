@@ -50,7 +50,13 @@ from ..utils.agutil import (
     detect_gpus,
 )
 from .base import AgSandboxBackendFields, agsandbox_backend, run_with_unkillable_child_grace
-from ._layer_squash import merge_layer_tars, overlay_diff_to_tar, sha256_file, build_save_archive
+from ._layer_squash import (
+    merge_layer_tars,
+    overlay_diff_to_tar,
+    sha256_file,
+    build_save_archive,
+    build_save_archive_from_base_save,
+)
 
 # _RUN_ID is never read within this module itself -- it's defined here and
 # imported by sandbox/__init__.py (which re-exports it for
@@ -514,6 +520,15 @@ _container_semaphore: "multiprocessing.BoundedSemaphore" = multiprocessing.Bound
     _keyring_container_limit()
 )
 
+# Serializes the one-time build of the prepared sandbox image within this
+# process; cross-process safety comes from the deterministic tag plus the
+# existence re-check inside the lock.
+_prepared_image_build_lock = threading.Lock()
+
+# Short-lived container that performs the prepared image build and is
+# committed to the prepared tag, then removed.
+_PREPARED_IMAGE_BUILD_CONTAINER = "agency-sandbox-prepared-builder"
+
 
 class _ContainerBackendBase(agsandbox_backend):
     """Manages a single container for one agent via docker or podman.
@@ -547,6 +562,170 @@ class _ContainerBackendBase(agsandbox_backend):
         """Identity by default (Docker accepts bare image names fine).
         Overridden by _PodmanBackend, which requires a fully-qualified name."""
         return name
+
+    def _prepared_image_name(self) -> str:
+        """Deterministic image tag for this backend's prepared base image.
+
+        Derived from the configured base image so different bases get
+        different prepared images, and identical bases share one. The
+        suffix records the tool-set definition's content, so changing the
+        required packages produces a new tag and a rebuild instead of
+        silently reusing a stale image.
+        """
+        import hashlib
+
+        from .sandbox_tools import SANDBOX_PYTHON_PACKAGES, SANDBOX_SYSTEM_PACKAGES
+
+        content = ";".join(SANDBOX_SYSTEM_PACKAGES + SANDBOX_PYTHON_PACKAGES)
+        content_digest = hashlib.sha256(content.encode()).hexdigest()[:12]
+        base = self._base_image.replace("/", "_").replace(":", "_")
+        return f"agency-sandbox-prepared-{base}-{content_digest}"
+
+    def _prepared_base_image(self) -> str:
+        """The image every fresh container starts from: the configured base
+        image with the shared sandbox tool set baked in.
+
+        Built once per host by whichever sandbox gets there first, then
+        reused by every later sandbox (the tag is deterministic and the
+        build is guarded by a process-wide lock plus an existence re-check
+        inside it, so concurrent starts cannot double-build). A build
+        failure falls back to the unprepared base image rather than making
+        sandboxes impossible.
+        """
+        prepared = self._prepared_image_name()
+        probe = self._run(
+            [
+                self._runtime,
+                "image",
+                "inspect",
+                self._resolve_image(prepared),
+            ],
+            check=False,
+            timeout=self._agconfig.sandbox.inspect_timeout_s,
+        )
+        if probe.returncode == 0:
+            return prepared
+
+        with _prepared_image_build_lock:
+            probe = self._run(
+                [
+                    self._runtime,
+                    "image",
+                    "inspect",
+                    self._resolve_image(prepared),
+                ],
+                check=False,
+                timeout=self._agconfig.sandbox.inspect_timeout_s,
+            )
+            if probe.returncode == 0:
+                return prepared
+
+            from .sandbox_tools import SANDBOX_PYTHON_PACKAGES, SANDBOX_SYSTEM_PACKAGES
+
+            base_resolved = self._resolve_image(self._base_image)
+            print(
+                f"[agsandbox] First sandbox on this host: preparing the shared sandbox "
+                f"image from {base_resolved} (installing basic tools and Python "
+                f"packages; one-time, a few minutes, cached for all later "
+                f"sandboxes)...",
+                file=__import__("sys").stderr,
+                flush=True,
+            )
+            self._run(
+                [
+                    self._runtime,
+                    "pull",
+                    base_resolved,
+                ],
+                check=False,
+                timeout=self._agconfig.sandbox.prepared_image_build_timeout_s,
+            )
+            self._run(
+                [
+                    self._runtime,
+                    "rm",
+                    "-f",
+                    _PREPARED_IMAGE_BUILD_CONTAINER,
+                ],
+                check=False,
+                timeout=self._agconfig.sandbox.docker_rm_timeout_s,
+            )
+            packages_line = " ".join(SANDBOX_SYSTEM_PACKAGES)
+            python_packages_line = " ".join(SANDBOX_PYTHON_PACKAGES)
+            build_script = (
+                f"set -e; apt-get update -qq; "
+                f"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "
+                f"{packages_line}; rm -rf /var/lib/apt/lists/*; "
+                f"python3 -m pip install --quiet --no-cache-dir {python_packages_line}"
+            )
+            build = self._run(
+                [
+                    self._runtime,
+                    "run",
+                    "--name",
+                    _PREPARED_IMAGE_BUILD_CONTAINER,
+                    base_resolved,
+                    "bash",
+                    "-c",
+                    build_script,
+                ],
+                check=False,
+                timeout=self._agconfig.sandbox.prepared_image_build_timeout_s,
+            )
+            print(
+                "[agsandbox] Sandbox image tool installation finished; saving the "
+                "prepared image...",
+                file=__import__("sys").stderr,
+                flush=True,
+            )
+            if build.returncode != 0:
+                print(
+                    "[agsandbox_backend] WARNING: prepared sandbox image build failed, "
+                    "falling back to the unprepared base image "
+                    f"(exit {build.returncode}): "
+                    f"{build.stderr.decode('utf-8', errors='replace')[-2000:]}",
+                    file=__import__("sys").stderr,
+                    flush=True,
+                )
+                return base_resolved
+
+            commit = self._run(
+                [
+                    self._runtime,
+                    "commit",
+                    "--change",
+                    "LABEL org.agency-project.sandbox-prepared=true",
+                    _PREPARED_IMAGE_BUILD_CONTAINER,
+                    self._resolve_image(prepared),
+                ],
+                check=False,
+                timeout=self._agconfig.sandbox.inspect_timeout_s,
+            )
+            if commit.returncode != 0:
+                print(
+                    "[agsandbox_backend] WARNING: could not tag the prepared sandbox "
+                    "image, falling back to the unprepared base image: "
+                    f"{commit.stderr.decode('utf-8', errors='replace')[-2000:]}",
+                    file=__import__("sys").stderr,
+                    flush=True,
+                )
+                return base_resolved
+            print(
+                f"[agsandbox] Shared sandbox image ready: {prepared}",
+                file=__import__("sys").stderr,
+                flush=True,
+            )
+            self._run(
+                [
+                    self._runtime,
+                    "rm",
+                    "-f",
+                    _PREPARED_IMAGE_BUILD_CONTAINER,
+                ],
+                check=False,
+                timeout=self._agconfig.sandbox.docker_rm_timeout_s,
+            )
+            return prepared
 
     def _acquire_runtime_slot(self) -> None:
         """Acquire the session-keyring-derived container-concurrency
@@ -843,7 +1022,12 @@ class _ContainerBackendBase(agsandbox_backend):
                 self._ensure_workspace_dir()
                 # Keep _checkpoint_image — not a one-shot restore, needed for future restarts.
             else:
-                image = self._resolve_image(self._base_image)
+                image = self._prepared_base_image()
+                print(
+                    f"[agsandbox] Starting container {name} from image {image}...",
+                    file=__import__("sys").stderr,
+                    flush=True,
+                )
                 run_cmd = (
                     [self._runtime, "run", "-d", "--init", "--name", name]
                     + ["--label", f"{_AGENCY_OWNER_PID_LABEL}={self._owner_pid}"]
@@ -1407,10 +1591,11 @@ class _ContainerBackendBase(agsandbox_backend):
 
     def _accumulator_squash_commit(self, tag: str) -> None:
         """Fast path: apply the lazily-built accumulator diff-tar
-        directly onto the reference chain's own layers (referenced by
-        digest only -- see `_layer_squash.build_save_archive()`, never
-        touched) to produce the new squashed HEAD image. Confirmed
-        empirically to complete in well under a second regardless of base
+        directly onto the reference chain's own layers (Docker: referenced
+        by digest only, never touched; Podman: streamed from a local save
+        of the base image -- see `_layer_squash.build_save_archive*()`)
+        to produce the new squashed HEAD image. Confirmed
+        empirically to complete in a few seconds regardless of base
         image size.
 
         The accumulator must already have been built by
@@ -1486,15 +1671,41 @@ class _ContainerBackendBase(agsandbox_backend):
         tmp_dir = Path(tempfile.mkdtemp(prefix="agency-squash-", dir=str(agency_run_scratch_dir())))
         try:
             out_tar_path = tmp_dir / "out.tar"
-            build_save_archive(
-                out_tar_path,
-                base_layer_digests=base_diff_ids,
-                merged_blob_path=self._accumulated_diff_path,
-                merged_blob_digest=merged_digest,
-                config_bytes=new_config_bytes,
-                config_digest=new_config_digest,
-                tag=tag,
-            )
+            if self._runtime == "podman":
+                # Podman's loader requires every layer blob in the archive
+                # to carry real content; stream the base image's own blobs
+                # through a local save.
+                base_save_path = tmp_dir / "base.tar"
+                self._run(
+                    [
+                        self._runtime,
+                        "save",
+                        "-o",
+                        str(base_save_path),
+                        self._resolve_image(self._base_image),
+                    ],
+                    check=True,
+                    timeout=self._agconfig.sandbox.squash_timeout_s,
+                )
+                build_save_archive_from_base_save(
+                    out_tar_path,
+                    base_save_archive=base_save_path,
+                    merged_blob_path=self._accumulated_diff_path,
+                    merged_blob_digest=merged_digest,
+                    config_bytes=new_config_bytes,
+                    config_digest=new_config_digest,
+                    tag=tag,
+                )
+            else:
+                build_save_archive(
+                    out_tar_path,
+                    base_layer_digests=base_diff_ids,
+                    merged_blob_path=self._accumulated_diff_path,
+                    merged_blob_digest=merged_digest,
+                    config_bytes=new_config_bytes,
+                    config_digest=new_config_digest,
+                    tag=tag,
+                )
             self._run(
                 [self._runtime, "load", "-i", str(out_tar_path)],
                 check=True,

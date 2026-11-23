@@ -368,14 +368,8 @@ class _DockerBackend(_ContainerBackendBase):
                             flush=True,
                         )
                     else:
-                        # The view snapshot is unreferenced (no image, container,
-                        # or lease points at it), so containerd's GC collects it
-                        # if a pass runs between `view` and `mounts` -- which
-                        # dockerd's per-commit image churn triggers
-                        # intermittently, degrading the fast path to
-                        # export/import. `containerd.io/gc.root` marks it as a
-                        # GC root for the brief lookup window; `snapshots rm`
-                        # in the finally-block releases it immediately after.
+                        # The unreferenced view is GC-eligible;
+                        # gc.root keeps it alive for this lookup.
                         subprocess.run(
                             ctr_n
                             + [
@@ -420,18 +414,9 @@ class _DockerBackend(_ContainerBackendBase):
                                 # whole containerd tree.
                                 if ctr[:2] == ["sudo", "-n"]:
                                     try:
-                                        # The snapshot dir itself (and its
-                                        # contents) needs -R; the ANCESTORS
-                                        # need plain a+rX or the path down to
-                                        # it is still untraversable -- rootful
-                                        # containerd keeps the whole
-                                        # /var/lib/containerd tree at 0700, so
-                                        # opening only snapshots/<id>/ left
-                                        # stat()/scandir() failing with EACCES
-                                        # and degraded every fast squash to
-                                        # export/import. Walk up only until an
-                                        # ancestor is already traversable (in
-                                        # practice /var/lib), never beyond.
+                                        # -R opens the snapshot dir and its
+                                        # contents; ancestors need plain a+rX
+                                        # or the path to it stays untraversable.
                                         subprocess.run(
                                             [
                                                 "sudo",
@@ -527,9 +512,7 @@ class _DockerBackend(_ContainerBackendBase):
         → `<data_root>/overlay2/<cache-id>/diff/`."""
         layerdb_root = data_root / "image" / "overlay2" / "layerdb" / "sha256"
         try:
-            # sorted(): iteration order is otherwise filesystem-dependent,
-            # which made the "skipped unreadable entry" warning fire or not
-            # fire depending on the host's directory-entry order.
+            # sorted() keeps warning behavior independent of FS entry order.
             for entry in sorted(layerdb_root.iterdir()):
                 try:
                     if (entry / "diff").read_text().strip() != diff_id:

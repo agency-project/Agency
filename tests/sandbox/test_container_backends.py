@@ -2714,6 +2714,10 @@ class TestCheckpointSquash:
 
         def cycle2(args, check, input, timeout):
             calls.append(args)
+            if args[1] == "save" and "-o" in args:
+                Path(args[args.index("-o") + 1]).write_bytes(
+                    (tmp_path / "fake-base-save.tar").read_bytes()
+                )
             if LAYERS in args:
                 return _Done(stdout=b'["sha256:flattened-1", "sha256:new-commit"]')
             if args[1] == "inspect":
@@ -2723,6 +2727,14 @@ class TestCheckpointSquash:
                     ).encode()
                 )
             return _Done()
+
+        fake_save = tmp_path / "fake-base-save.tar"
+        import tarfile as _tarfile
+
+        with _tarfile.open(fake_save, "w") as _t:
+            _entry = _tarfile.TarInfo("sha256:flattened-1.tar")
+            _entry.size = 0
+            _t.addfile(_entry)
 
         with _committing(
             backend,
@@ -2997,9 +3009,11 @@ class TestCheckpointAccumulator:
             stdout=json.dumps([{"Config": {}, "Architecture": "amd64", "Os": "linux"}]).encode()
         )
 
-    def _layers_handler(self, base_layers, current_layers):
+    def _layers_handler(self, base_layers, current_layers, base_save_tar=None):
         """`_run` answering the base image's chain with *base_layers* and every
-        other image's with *current_layers*; plain `inspect` returns a config."""
+        other image's with *current_layers*; plain `inspect` returns a config.
+        *base_save_tar* (a real archive path) is served for `save` so the
+        Podman squash path can stream the base blobs it needs."""
 
         def handler(args, check, input, timeout):
             if LAYERS in args:
@@ -3007,6 +3021,12 @@ class TestCheckpointAccumulator:
                 return _Done(stdout=json.dumps(chain).encode())
             if args[1] == "inspect":
                 return self._inspect_config()
+            if args[1] == "save" and base_save_tar is not None:
+                if "-o" in args:
+                    Path(args[args.index("-o") + 1]).write_bytes(
+                        base_save_tar.read_bytes()
+                    )
+                return _Done(stdout=base_save_tar.read_bytes())
             return _Done()
 
         return handler
@@ -3129,18 +3149,22 @@ class TestCheckpointAccumulator:
         self._accumulator_with(backend, tmp_path)
         backend._squash_base_diff_ids = ["sha256:prior-squash-layer"]
         calls = []
+        base = self._layers_handler(
+            ["sha256:prior-squash-layer"],
+            ["sha256:prior-squash-layer", "sha256:c1"],
+            base_save_tar=self._tiny_base_save_tar(tmp_path),
+        )
 
         def handler(args, check, input, timeout):
             calls.append(args)
-            if LAYERS in args:
-                return _Done(stdout=b'["sha256:prior-squash-layer", "sha256:c1"]')
-            if args[1] == "inspect":
-                return self._inspect_config()
-            return _Done()
+            return base(args, check, input, timeout)
 
         with patch.object(type(backend), "_run", _fn_run(handler)):
             backend._accumulator_squash_commit("some-tag")
-        assert not any(c[-1] == self.BASE for c in calls if len(c) > 1), calls
+        # No diff_ids inspect of the base image; the Podman save of it is
+        # expected (blob streaming), the Docker path touches it not at all.
+        layers_inspects = [c for c in calls if LAYERS in c]
+        assert all(c[-1] != self.BASE for c in layers_inspects), calls
         assert backend._squash_base_diff_ids[0] == "sha256:prior-squash-layer"
         assert len(backend._squash_base_diff_ids) == 2
 
@@ -3149,7 +3173,11 @@ class TestCheckpointAccumulator:
         then records base chain + exactly one flattened layer."""
         assert backend._squash_base_diff_ids is None
         self._accumulator_with(backend, tmp_path)
-        handler = self._layers_handler(["sha256:base1"], ["sha256:base1", "sha256:c1"])
+        handler = self._layers_handler(
+            ["sha256:base1"],
+            ["sha256:base1", "sha256:c1"],
+            base_save_tar=self._tiny_base_save_tar(tmp_path),
+        )
         with patch.object(type(backend), "_run", _fn_run(handler)):
             backend._accumulator_squash_commit("some-tag")
         assert backend._squash_base_diff_ids[0] == "sha256:base1"
@@ -3160,7 +3188,11 @@ class TestCheckpointAccumulator:
     ):
         self._accumulator_with(backend, tmp_path)
         calls = []
-        base = self._layers_handler(["sha256:base1"], ["sha256:base1", "sha256:c1"])
+        base = self._layers_handler(
+            ["sha256:base1"],
+            ["sha256:base1", "sha256:c1"],
+            base_save_tar=self._tiny_base_save_tar(tmp_path),
+        )
 
         def handler(args, check, input, timeout):
             calls.append(args)
@@ -3171,6 +3203,22 @@ class TestCheckpointAccumulator:
         loads = [c for c in calls if c[1] == "load"]
         assert loads and loads[0][0] == container_runtime
         assert all(c[0] == container_runtime for c in calls)
+
+    @staticmethod
+    def _tiny_base_save_tar(tmp_path):
+        """A minimal docker-archive for the `save` call in the Podman squash
+        path: one legacy-layout layer blob, which the archive builder
+        streams through."""
+        import io
+        import tarfile
+
+        path = tmp_path / "base-save.tar"
+        with tarfile.open(path, "w") as out:
+            data = b"layer"
+            entry = tarfile.TarInfo("sha256:base1.tar")
+            entry.size = len(data)
+            out.addfile(entry, io.BytesIO(data))
+        return path
 
     def test_real_end_to_end_fast_squash(self, container_kind, kind_spec):
         """Several plain-commit cycles on the real base image, each folded into

@@ -43,6 +43,7 @@ optimization, not a general-purpose image tool.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -153,10 +154,16 @@ def merge_layer_tars(layer_paths: "list[Path]", output_path: Path) -> None:
         ordered_paths = sorted(final.keys(), key=lambda p: tuple(p.split("/")))
 
         with tarfile.open(output_path, "w") as out:
+            # Hardlink entries fail Podman's loader extraction even when
+            # their source is in the same tar; a symlink to the same
+            # target is accepted everywhere and resolves identically.
             for path in ordered_paths:
                 entry = final[path]
                 if entry[0] == "add":
                     _, idx, member = entry
+                    if member.islnk():
+                        member = copy.copy(member)
+                        member.type = tarfile.SYMTYPE
                     if member.isfile():
                         stream = tars[idx].extractfile(member)
                         out.addfile(member, stream)
@@ -324,9 +331,12 @@ def build_save_archive(
 ) -> None:
     """Construct a `docker save`/`load`-compatible archive referencing the
     base image's layers BY DIGEST ONLY, never reading their real blob
-    content -- both runtimes resolve digests from their local store,
-    which is what makes squashing cheap regardless of base image size.
-    Podman also requires a zero-byte placeholder per unique base-layer digest."""
+    content -- Docker resolves digests from its local store, which makes
+    squashing cheap regardless of base image size. Zero-byte placeholder
+    blobs are written for each base-layer digest so the manifest's layer
+    list is complete; only Docker's loader accepts this form (Podman's
+    needs the real blob contents and rejects placeholders -- podman
+    backends must use `build_save_archive_from_base_save` instead)."""
     if ":" not in tag.rsplit("/", 1)[-1]:
         tag = f"{tag}:latest"
     base_blob_names = [f"blobs/sha256/{d.split(':', 1)[1]}" for d in base_layer_digests]
@@ -347,4 +357,100 @@ def build_save_archive(
         _add_file(out, f"blobs/sha256/{merged_blob_digest}", merged_blob_path)
 
 
-__all__ = ["merge_layer_tars", "overlay_diff_to_tar", "sha256_file", "build_save_archive"]
+def _base_save_layer_entries(base_save_archive: Path) -> "list[tarfile.TarInfo]":
+    """The real layer-blob entries inside a `podman save` docker-archive,
+    in manifest order. Podman 4 writes legacy layout (`<digest>.tar` at the
+    top level); OCI layout (`blobs/sha256/<digest>`) is accepted too, so
+    both are collected."""
+    layer_names: "list[str]" = []
+    entries: "dict[str, tarfile.TarInfo]" = {}
+    with tarfile.open(base_save_archive, "r") as base:
+        all_entries = base.getmembers()
+        # Legacy layout: manifest.json's Layers list names the layer files.
+        manifest_entry = next(
+            (e for e in all_entries if e.name.lstrip("./") == "manifest.json"), None
+        )
+        if manifest_entry is not None:
+            extracted = base.extractfile(manifest_entry)
+            if extracted is not None:
+                for item in json.loads(extracted.read().decode()):
+                    layer_names.extend(item.get("Layers", []))
+        for entry in all_entries:
+            if not entry.isfile():
+                continue
+            normalized = entry.name.lstrip("./")
+            if normalized.startswith("blobs/sha256/") or normalized.endswith(".tar"):
+                entries[normalized] = entry
+    ordered = []
+    for name in layer_names:
+        normalized = name.lstrip("./")
+        entry = entries.get(normalized) or entries.get(f"{normalized}.tar")
+        if entry is not None:
+            ordered.append(entry)
+    return ordered
+
+
+def build_save_archive_from_base_save(
+    output_path: Path,
+    *,
+    base_save_archive: Path,
+    merged_blob_path: Path,
+    merged_blob_digest: str,
+    config_bytes: bytes,
+    config_digest: str,
+    tag: str,
+) -> None:
+    """Construct a `docker save`/`load`-compatible archive whose base-layer
+    blobs are the REAL contents taken from *base_save_archive* (a `save`
+    of the base image). Podman's loader requires every layer blob in the
+    archive to carry real content -- it does not resolve digests from its
+    local store, and rejects zero-byte placeholders with "unexpected EOF"
+    -- so Podman's fast squash streams the base image's own blobs through
+    rather than referencing them by digest. Still fast: a save/load cycle
+    of the base image is a local disk copy, not a network operation."""
+    if ":" not in tag.rsplit("/", 1)[-1]:
+        tag = f"{tag}:latest"
+    base_layer_entries = _base_save_layer_entries(base_save_archive)
+    base_blob_names = [
+        f"blobs/sha256/{entry.name.lstrip('./').split('/')[-1].removesuffix('.tar')}"
+        for entry in base_layer_entries
+    ]
+    manifest = [
+        {
+            "Config": f"blobs/sha256/{config_digest}",
+            "RepoTags": [tag],
+            "Layers": base_blob_names + [f"blobs/sha256/{merged_blob_digest}"],
+        }
+    ]
+    manifest_bytes = json.dumps(manifest).encode()
+
+    with tarfile.open(base_save_archive, "r") as base, tarfile.open(
+        output_path, "w"
+    ) as out:
+        for entry in base_layer_entries:
+            # Copy the real base-layer blobs; skip the legacy per-layer
+            # directories and the old repositories file -- the renamed
+            # blobs plus the new manifest and config are sufficient for
+            # both runtimes' loaders.
+            extracted = base.extractfile(entry)
+            if extracted is None:
+                continue
+            entry = copy.copy(entry)
+            entry.name = f"blobs/sha256/{entry.name.lstrip('./').split('/')[-1].removesuffix('.tar')}"
+            entry.uid = 0
+            entry.gid = 0
+            entry.uname = ""
+            entry.gname = ""
+            out.addfile(entry, extracted)
+        _add_bytes(out, "manifest.json", manifest_bytes)
+        _add_bytes(out, f"blobs/sha256/{config_digest}", config_bytes)
+        _add_file(out, f"blobs/sha256/{merged_blob_digest}", merged_blob_path)
+
+
+__all__ = [
+    "merge_layer_tars",
+    "overlay_diff_to_tar",
+    "sha256_file",
+    "build_save_archive",
+    "build_save_archive_from_base_save",
+]
