@@ -9,6 +9,23 @@ one per harness. Used by `tests/integration/test_replay_real_recording.py`.
 - Agency's own transcript format changes, or
 - you want a different recorded conversation.
 
+Older recordings (pre `message_block_lookup`) carry their block payloads in
+a `blocks` table. The reader joins `exchange_chain` against
+`message_block_lookup`, so refresh such a recording in place with:
+
+```bash
+python3 - <<'EOF'
+import sqlite3
+
+db = sqlite3.connect("recording.sqlite3")
+db.execute("CREATE TABLE message_block_lookup (hash TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+db.executemany(
+    "INSERT OR IGNORE INTO message_block_lookup VALUES (?, ?)",
+    db.execute("SELECT hash, payload FROM blocks").fetchall(),
+)
+db.commit()
+```
+
 ## Steps
 
 - Set where your `agency` checkout is (used in step 2):
