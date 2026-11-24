@@ -364,8 +364,11 @@ class KimiAdapter(ChatCompletionsProtocol, HarnessAdapter):
             f"max_context_size = {int(context_limit) if context_limit is not None else 200000}",
             'capabilities = ["tool_use"]',
         ]
+        loop_control = []
         if max_steps is not None:
-            lines += ["", "[loop_control]", f"max_steps_per_turn = {int(max_steps)}"]
+            loop_control.append(f"max_steps_per_turn = {int(max_steps)}")
+        if loop_control:
+            lines += ["", "[loop_control]", *loop_control]
         for event, command in hooks:
             lines += [
                 "",
