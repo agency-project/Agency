@@ -38,7 +38,7 @@ import tempfile
 import threading
 import time
 import uuid as _uuid
-from contextlib import contextmanager as _contextmanager
+from contextlib import contextmanager as _contextmanager, contextmanager
 from pathlib import Path
 
 from ..observability.profiler import agprof
@@ -520,14 +520,36 @@ _container_semaphore: "multiprocessing.BoundedSemaphore" = multiprocessing.Bound
     _keyring_container_limit()
 )
 
-# Serializes the one-time build of the prepared sandbox image within this
-# process; cross-process safety comes from the deterministic tag plus the
-# existence re-check inside the lock.
+# Serializes the prepared-image build within this process; the host lock
+# below extends the exclusion across processes.
 _prepared_image_build_lock = threading.Lock()
 
 # Short-lived container that performs the prepared image build and is
 # committed to the prepared tag, then removed.
 _PREPARED_IMAGE_BUILD_CONTAINER = "agency-sandbox-prepared-builder"
+
+
+@contextmanager
+def _prepared_image_host_lock(image_tag: str):
+    """Cross-process exclusive lock for building *image_tag*.
+
+    Keyed by the prepared image's own name, so different base images never
+    serialize against each other. One holder builds; the rest wake up, and
+    the tag-existence re-check inside the lock hands them the result.
+    """
+    import fcntl
+
+    from ..utils.agutil import agency_tmp_dir
+
+    lock_dir = agency_tmp_dir() / "prepared_image_locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{image_tag.replace('/', '_')}.lock"
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 class _ContainerBackendBase(agsandbox_backend):
@@ -581,43 +603,37 @@ class _ContainerBackendBase(agsandbox_backend):
         base = self._base_image.replace("/", "_").replace(":", "_")
         return f"agency-sandbox-prepared-{base}-{content_digest}"
 
-    def _prepared_base_image(self) -> str:
-        """The image every fresh container starts from: the configured base
-        image with the shared sandbox tool set baked in.
-
-        Built once per host by whichever sandbox gets there first, then
-        reused by every later sandbox (the tag is deterministic and the
-        build is guarded by a process-wide lock plus an existence re-check
-        inside it, so concurrent starts cannot double-build). A build
-        failure falls back to the unprepared base image rather than making
-        sandboxes impossible.
-        """
-        prepared = self._prepared_image_name()
+    def _image_exists(self, image: str) -> bool:
+        """Whether *image* exists in the local runtime's store."""
         probe = self._run(
             [
                 self._runtime,
                 "image",
                 "inspect",
-                self._resolve_image(prepared),
+                self._resolve_image(image),
             ],
             check=False,
             timeout=self._agconfig.sandbox.inspect_timeout_s,
         )
-        if probe.returncode == 0:
+        return probe.returncode == 0
+
+    def _prepared_base_image(self) -> str:
+        """The image every fresh container starts from: the configured base
+        image with the shared sandbox tool set baked in.
+
+        Built once per host by whichever sandbox gets there first, then
+        reused by every later sandbox. The tag is deterministic and the
+        build is guarded by a host-wide file lock plus an existence
+        re-check inside it, so concurrent starts -- in this process or any
+        other -- cannot double-build. A build failure falls back to the
+        unprepared base image rather than making sandboxes impossible.
+        """
+        prepared = self._prepared_image_name()
+        if self._image_exists(prepared):
             return prepared
 
-        with _prepared_image_build_lock:
-            probe = self._run(
-                [
-                    self._runtime,
-                    "image",
-                    "inspect",
-                    self._resolve_image(prepared),
-                ],
-                check=False,
-                timeout=self._agconfig.sandbox.inspect_timeout_s,
-            )
-            if probe.returncode == 0:
+        with _prepared_image_build_lock, _prepared_image_host_lock(prepared):
+            if self._image_exists(prepared):
                 return prepared
 
             from .sandbox_tools import SANDBOX_PYTHON_PACKAGES, SANDBOX_SYSTEM_PACKAGES

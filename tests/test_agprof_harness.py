@@ -58,6 +58,29 @@ _BARE_THREAD_ALLOWLIST = {
     ("agency/observability/profiler/agprof.py", "spawn_traced"): (2, "spawn_traced implementation"),
 }
 
+# A raw Popen launches a process the profiler does not observe by
+# construction (unlike subprocess.run, which blocks the calling, traced
+# thread and reaps before returning).  Every site must either run inside a
+# profiler-observed path or carry a reviewed reason here.  Same identity
+# scheme as the thread allowlist.
+_BARE_POPEN_ALLOWLIST = {
+    # Sandbox process launch: chroot's own exec (no tracer available).
+    (
+        "agency/sandbox/chroot.py",
+        "_ChrootBackend._run_unshared._call",
+    ): (1, "chroot sandbox exec"),
+    # Opens the profiled subprocess and records its own launch-to-reap span.
+    ("agency/native_harness/profiling.py", "run_process"): (
+        1,
+        "profiler-observed subprocess launch",
+    ),
+    # The webui's own HTTP server; UI plumbing, not agent work.
+    (
+        "agency/observability/agwebui/__init__.py",
+        "agwebui.run",
+    ): (1, "webui server process"),
+}
+
 
 class _BareThreadVisitor(ast.NodeVisitor):
     def __init__(
@@ -66,12 +89,17 @@ class _BareThreadVisitor(ast.NodeVisitor):
         *,
         threading_aliases: set[str],
         thread_aliases: set[str],
+        subprocess_aliases: "set[str] | None" = None,
+        popen_aliases: "set[str] | None" = None,
     ) -> None:
         self.relative_path = relative_path
         self.threading_aliases = threading_aliases
         self.thread_aliases = thread_aliases
+        self.subprocess_aliases = subprocess_aliases or set()
+        self.popen_aliases = popen_aliases or set()
         self.scope: list[str] = []
         self.calls: Counter[tuple[str, str]] = Counter()
+        self.popen_calls: Counter[tuple[str, str]] = Counter()
 
     def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self.scope.append(node.name)
@@ -88,20 +116,36 @@ class _BareThreadVisitor(ast.NodeVisitor):
         self._visit_scope(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        is_bare_thread = False
+        scope = ".".join(self.scope) or "<module>"
+        if self._is_bare_thread(node):
+            self.calls[(self.relative_path, scope)] += 1
+        if self._is_bare_popen(node):
+            self.popen_calls[(self.relative_path, scope)] += 1
+        self.generic_visit(node)
+
+    def _is_bare_thread(self, node: ast.Call) -> bool:
         if isinstance(node.func, ast.Attribute):
             owner = node.func.value
-            is_bare_thread = (
+            return (
                 node.func.attr == "Thread"
                 and isinstance(owner, ast.Name)
                 and owner.id in self.threading_aliases
             )
-        elif isinstance(node.func, ast.Name):
-            is_bare_thread = node.func.id in self.thread_aliases
-        if is_bare_thread:
-            scope = ".".join(self.scope) or "<module>"
-            self.calls[(self.relative_path, scope)] += 1
-        self.generic_visit(node)
+        if isinstance(node.func, ast.Name):
+            return node.func.id in self.thread_aliases
+        return False
+
+    def _is_bare_popen(self, node: ast.Call) -> bool:
+        if isinstance(node.func, ast.Attribute):
+            owner = node.func.value
+            return (
+                node.func.attr == "Popen"
+                and isinstance(owner, ast.Name)
+                and owner.id in self.subprocess_aliases
+            )
+        if isinstance(node.func, ast.Name):
+            return node.func.id in self.popen_aliases
+        return False
 
 
 def _thread_import_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
@@ -126,6 +170,27 @@ def _thread_import_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
     return threading_aliases, thread_aliases
 
 
+def _popen_import_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Return aliases that can construct ``subprocess.Popen`` directly.
+
+    Same conservative alias collection as the thread guard: ``import
+    subprocess as sp`` and ``from subprocess import Popen as Launch`` are
+    both caught, whatever their position in the file.
+    """
+    subprocess_aliases: set[str] = set()
+    popen_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                if imported.name == "subprocess":
+                    subprocess_aliases.add(imported.asname or "subprocess")
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for imported in node.names:
+                if imported.name == "Popen":
+                    popen_aliases.add(imported.asname or "Popen")
+    return subprocess_aliases, popen_aliases
+
+
 def _bare_thread_calls() -> Counter[tuple[str, str]]:
     calls: Counter[tuple[str, str]] = Counter()
     for path in _AGENCY_ROOT.rglob("*.py"):
@@ -140,13 +205,37 @@ def _bare_thread_calls() -> Counter[tuple[str, str]]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         threading_aliases, thread_aliases = _thread_import_aliases(tree)
+        subprocess_aliases, popen_aliases = _popen_import_aliases(tree)
         visitor = _BareThreadVisitor(
             path.relative_to(_REPO_ROOT).as_posix(),
             threading_aliases=threading_aliases,
             thread_aliases=thread_aliases,
+            subprocess_aliases=subprocess_aliases,
+            popen_aliases=popen_aliases,
         )
         visitor.visit(tree)
         calls.update(visitor.calls)
+    return calls
+
+
+def _bare_popen_calls() -> Counter[tuple[str, str]]:
+    calls: Counter[tuple[str, str]] = Counter()
+    for path in _AGENCY_ROOT.rglob("*.py"):
+        if path.name.startswith("._"):
+            continue
+        if "tests" in path.relative_to(_AGENCY_ROOT).parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        subprocess_aliases, popen_aliases = _popen_import_aliases(tree)
+        visitor = _BareThreadVisitor(
+            path.relative_to(_REPO_ROOT).as_posix(),
+            threading_aliases=set(),
+            thread_aliases=set(),
+            subprocess_aliases=subprocess_aliases,
+            popen_aliases=popen_aliases,
+        )
+        visitor.visit(tree)
+        calls.update(visitor.popen_calls)
     return calls
 
 
@@ -170,6 +259,30 @@ def launch():
     visitor.visit(tree)
 
     assert visitor.calls == Counter({("agency/example.py", "launch"): 2})
+
+
+def test_bare_popen_visitor_recognizes_import_aliases():
+    tree = ast.parse(
+        """
+import subprocess as sp
+from subprocess import Popen as Launch
+
+def run():
+    sp.Popen(["true"])
+    Launch(["true"])
+"""
+    )
+    subprocess_aliases, popen_aliases = _popen_import_aliases(tree)
+    visitor = _BareThreadVisitor(
+        "agency/example.py",
+        threading_aliases=set(),
+        thread_aliases=set(),
+        subprocess_aliases=subprocess_aliases,
+        popen_aliases=popen_aliases,
+    )
+    visitor.visit(tree)
+
+    assert visitor.popen_calls == Counter({("agency/example.py", "run"): 2})
 
 
 def test_session_stop_preserves_an_inflight_run_as_interrupted(monkeypatch, tmp_path):
@@ -213,3 +326,13 @@ def test_bare_thread_sites_match_reviewed_allowlist():
     )
 
     assert _bare_thread_calls() == expected
+
+
+def test_bare_popen_sites_match_reviewed_allowlist():
+    """A new unobserved process launch must run under a profiler-observed
+    path or carry a reviewed reason in the allowlist."""
+    expected = Counter(
+        {identity: count for identity, (count, _classification) in _BARE_POPEN_ALLOWLIST.items()}
+    )
+
+    assert _bare_popen_calls() == expected
