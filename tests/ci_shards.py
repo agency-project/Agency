@@ -48,6 +48,8 @@ _SANDBOX_SHARD_FILES: "dict[str, list[str]]" = {
         "tests/harness/test_traced_pty.py",
         "tests/harness/test_sandbox_mcp.py",
         "tests/harness/test_time_ctrl_linux.py",
+        "tests/harness/test_context_window.py",
+        "tests/harness/test_context_window_live.py",
         "tests/harness/test_protocol.py",
         "tests/harness/test_gpu_exec_gate_linux.py",
         "tests/harness/test_fast_resume.py",

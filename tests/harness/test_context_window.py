@@ -356,6 +356,7 @@ def test_claude_driver_applies_the_window_settings(model, limit, tmp_path, monke
     )
     adapter = SimpleNamespace(
         agconfig=agconfig(),
+        binary=lambda: "claude",
         prepare_pty=lambda *args, **kwargs: (["claude", "--model", model], {"PATH": "/bin"}),
     )
     runtime = AdapterRuntime(
