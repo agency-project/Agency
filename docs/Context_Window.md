@@ -15,7 +15,7 @@ does.
 | Codex | `model_context_window`, and above 272K a one-model `model_catalog_json` | 90% |
 | Grok | `context_window` | 85% (Grok's default) |
 | OpenCode | `limit.context` and `limit.output` | 90%: `context - min(output, 32K)` |
-| Kimi | `max_context_size`, `[loop_control] reserved_context_size` and `compaction_trigger_ratio` | 85%, which it reaches about a step late: ~90% |
+| Kimi | `max_context_size` | its own: min(85% of the window, window − 50K) |
 
 The rules are those of the versions `tests/host/fixtures/Dockerfile.harnesses`
 pins (Claude Code 2.1.296, Codex 0.147.0, Grok 1.0.0, OpenCode 1.18.15, Kimi
@@ -37,14 +37,12 @@ Agency knows its input cap; `fetch_context_limit` takes the smaller.
 ## A request that is too big anyway
 
 A harness compacts before a call on the previous reply's count, so one large
-tool output can carry the next request past the limit, and OpenCode's second
-summary request re-sends the whole session. `LlmHandlerServer` passes every
-request through `agency/llm/context_fit.py` first: over the limit, the oldest
-tool results lose their text (`[Cleared by Agency: ...]`, the call and its
-result stay paired), as Anthropic's `clear_tool_uses` does, until it fits; the
-newest result, if too big alone, keeps its head and tail. Sizes come from the
-backend's own count of the conversation's characters. A `context_fit` event
-records each one. `llmconfig(fit_to_context_limit=False)` turns it off.
+tool output can carry the next request past the limit. When the backend
+rejects such a request, Agency words the error so harnesses take it for an
+overflow (`streaming.context_overflow_message`: "prompt is too long" and
+code `context_length_exceeded`), which starts Claude Code's reactive
+compaction, and Kimi's and OpenCode's by their source. Codex 0.147.0 and
+Grok 1.0.0 end the turn on that error instead.
 
 ## Limits
 
@@ -57,14 +55,6 @@ records each one. `llmconfig(fit_to_context_limit=False)` turns it off.
   live test below compares Codex's requests with and without the catalog.
 * Claude Code takes `--autocompact` up to 1M, so it compacts by 967K at the
   latest, and a Claude model name gets no window below 100K.
-* If the backend rejects a request for its size anyway (the estimate missed,
-  or the configured limit is above the model's real one), `LlmHandlerServer`
-  cuts it to three quarters and sends it again, up to three times, so the
-  harness gets an answer: Codex 0.147.0 and Grok 1.0.0 would end the turn on
-  that error. Past that, Agency words the error so harnesses take it for an
-  overflow (`streaming.context_overflow_message`: "prompt is too long" and
-  code `context_length_exceeded`), which starts Claude Code's reactive
-  compaction, and Kimi's and OpenCode's by their source.
 
 ## Tests
 

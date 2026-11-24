@@ -320,9 +320,6 @@ class agllm:
         listed = self._listed_context_limit(model_id)
         known = self.known_context_limit(model_id)
         if listed is not None and known is not None:
-            # A proxy's listing can carry the model's total window where the
-            # known value is its input cap (LiteLLM lists gpt-6-luna at
-            # 1,050,000 for a 922,000-token input cap); it never raises it.
             return min(listed, known)
         if listed is not None:
             return listed

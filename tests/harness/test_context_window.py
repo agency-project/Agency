@@ -285,8 +285,8 @@ def _opencode_threshold(model, limit, tmp_path, monkeypatch):
 
 def _kimi_threshold(model, limit, tmp_path, monkeypatch):
     # Kimi Code 0.42.0: min(ratio * max, max - reserved), 0.85 and 50K by
-    # default, the reserve only when smaller than max. It checks a step late
-    # (kimi.py), so it lands near 90% at 0.85.
+    # default, the reserve only when smaller than max. Agency passes only
+    # max_context_size; the rest is Kimi's own compaction behavior.
     _write_config("kimi", model, limit, tmp_path, monkeypatch)
     config = tomllib.loads((tmp_path / "config.toml").read_text())
     size = config["models"][model]["max_context_size"]
@@ -333,6 +333,10 @@ def _expected_range(harness, model, limit):
             return 1_000_000 - 33_000, 1_000_000 - 33_000
         if model.startswith("claude-") and limit * 0.9 + 33_000 < 100_000:
             pytest.skip("Claude Code's 100K minimum window binds; no Claude model is that small")
+    if harness == "kimi":
+        # Kimi's own behavior: min(0.85 * max, max - 50K reserve) -- the 50K
+        # reserve binds below ~333K and pulls the trigger point lower.
+        low = min(0.85 * limit, limit - 50_000)
     return low, high
 
 

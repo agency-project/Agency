@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
-from ...llm.context_fit import is_context_overflow
+import re
+
+# How providers say a prompt exceeded the model's window (Anthropic, OpenAI,
+# Bedrock, vLLM, LiteLLM's wrappers of them).
+_CONTEXT_OVERFLOW = re.compile(
+    r"prompt is too long|context[_ ]length[_ ]exceeded|maximum context length"
+    r"|context length|context window|input is too long|too large for model"
+    r"|exceeds? the maximum number of (?:input )?tokens",
+    re.IGNORECASE,
+)
+_NOT_OVERFLOW = re.compile(r"rate limit|too many requests|per minute", re.IGNORECASE)
+
+
+def is_context_overflow(message: str) -> bool:
+    """Whether a backend error says the prompt exceeded the model's window."""
+    return bool(_CONTEXT_OVERFLOW.search(message)) and not _NOT_OVERFLOW.search(message)
 
 
 _STREAM_END = object()
