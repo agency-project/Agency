@@ -8,6 +8,7 @@ import os
 from fastapi import Request
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from .. import agharness
 from ..pins import managed_binary
 from ..common import extract_bearer_token
 from .pty.driver import _HookPtyDriver, run_pty_attempt
@@ -33,13 +34,20 @@ class GrokDriver(_HookPtyDriver):
 
     def _configure(self, adapter, runtime, max_steps):
         self._trusted_directory = False
+        self.context_limit = fetch_context_limit(runtime.harness_base_url, runtime.token)
         adapter._write_grok_config(
             self.root,
             runtime.harness_base_url,
             runtime.token,
             runtime.model or "default",
-            context_limit=fetch_context_limit(runtime.harness_base_url, runtime.token),
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+            context_limit=self.context_limit,
         )
+        self._installed_mcp_servers = agharness.mcp_config_for(
+            runtime.harness_base_url,
+            runtime.token,
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+        )["mcpServers"]
         self.env["GROK_HOME"] = str(self.root)
         self.argv += ["--no-alt-screen", "--always-approve", "--no-memory", "--no-plan"]
         if not adapter.agconfig.harness_adapter.allow_subagents:
@@ -199,6 +207,7 @@ class GrokAdapter(ChatCompletionsProtocol, HarnessAdapter):
         token: str,
         model: str,
         *,
+        has_sandbox_mcp_tools: bool = False,
         context_limit: "int | None" = None,
     ) -> None:
         # config.toml, per docs.x.ai/build's configuration guide: a
@@ -224,6 +233,16 @@ class GrokAdapter(ChatCompletionsProtocol, HarnessAdapter):
         # Next-prompt ghost text costs a model call after every turn, and Grok
         # exits without awaiting it, leaving an orphaned request behind.
         config_toml += "\n[ui]\nprompt_suggestions = false\n"
+        # The Agency MCP servers, in Grok's own [mcp_servers.<name>] dialect
+        # (docs.x.ai/build's MCP guide): url + headers per HTTP server.
+        for name, server in agharness.mcp_config_for(
+            base_url, token, has_sandbox_mcp_tools=has_sandbox_mcp_tools
+        )["mcpServers"].items():
+            config_toml += (
+                f"\n[mcp_servers.{name}]\n"
+                f"url = {_toml_string(server['url'])}\n"
+                f"headers = {{ Authorization = {_toml_string(server['headers']['Authorization'])} }}\n"
+            )
         (config_home / "config.toml").write_text(config_toml)
 
     def register(self, app, router) -> None:

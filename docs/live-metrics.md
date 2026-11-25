@@ -169,46 +169,9 @@ is matched with its recorded measurement; other saved traces show their trace
 duration as before. Rates, percentiles and the trace duration are unchanged by
 the measurement boundary.
 
-## Local three-agent SWE-bench launcher
-
-This section records a prepared local workflow. `swebench_three_agents.py`, its
-`runs/` inputs, images, and pinned binary are local artifacts and are not shipped
-in a clean checkout. Preserve these instructions for reproducing that setup;
-for a checked-in launcher, start with [example 12](../examples/12_swebench_live.py)
-and its `--help`, which also requires separately prepared task data and an image.
-
-From `/home/eric/Documents/Codex/agency`, with provider credentials already
-exported:
-
-```bash
-AGENCY_PROFILE=1 AGENCY_WEBUI_PORT=7862 .venv/bin/python swebench_three_agents.py
-```
-
-This is the existing local launcher, not a guessed CLI. It creates investigator,
-fixer and validator Codex agents with max_concurrent_engines=3. It prepares each
-sandbox, then waits for Enter before launching their first tasks in parallel.
-Later refinement and independent patch validation are sequential stages.
-The script starts its own profiler server and lingers after execution:
-`http://localhost:7862/profiler?run=live`. No separate UI command is needed.
-
-Prerequisites:
-
-- Linux x86-64, the repository's Python 3.12+ virtual environment and dependencies.
-- Working Podman (preferred when installed) or Docker.
-- Existing `runs/swebench-three/task.json` and `input/`, including its Git checkout
-  matching task.json's base_commit.
-- Image `localhost/agency-swebench-three:latest` in that engine. The existing
-  recipes are `runs/swebench/image/Dockerfile` and
-  `runs/swebench-three/image/Dockerfile`; the latter inherits
-  `localhost/agency-swebench:latest`. Build them with the selected engine if absent.
-- The pinned Codex, installed with `agency install-harnesses codex`.
-- With default provider settings, exported `OPENAI_API_KEY`; alternatively the
-  existing provider-specific variables accepted by `examples/_common.py`.
-  `AGENCY_LLM_PROVIDER` and `AGENCY_LLM_MODEL` override repository defaults.
-  The launcher does not load `.env` itself.
-- `AGENCY_PROFILE=1` is needed for the environment-enabled system collector;
-  `examples/_common.py` otherwise defaults it off. Existing profiler scope and
-  permission requirements still apply. Do not silently substitute host data.
+For a checked-in SWE-bench launcher, start with
+[example 12](../examples/12_swebench_live.py) and its `--help`; it also
+requires separately prepared task data and an image.
 
 For an already recorded execution, the supported separate viewer is:
 

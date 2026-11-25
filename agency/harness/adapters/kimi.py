@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import posixpath
 import re
 import shlex
@@ -19,6 +20,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from .. import agharness
 from ..pins import managed_binary
 from .openai_chat_completions import ChatCompletionsProtocol
 from .pty.driver import PtyDriver, run_pty_attempt
@@ -103,6 +105,7 @@ class KimiDriver(PtyDriver):
                     path.write_text(text.replace(previous, current))
 
     def _configure(self, adapter, runtime, max_steps):
+        self.context_limit = fetch_context_limit(runtime.harness_base_url, runtime.token)
         adapter._write_kimi_config(
             self.root,
             runtime.harness_base_url,
@@ -110,8 +113,23 @@ class KimiDriver(PtyDriver):
             runtime.model or "default",
             max_steps,
             self._hook_commands(),
-            context_limit=fetch_context_limit(runtime.harness_base_url, runtime.token),
+            context_limit=self.context_limit,
         )
+        self._installed_mcp_servers = agharness.mcp_config_for(
+            runtime.harness_base_url,
+            runtime.token,
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+        )["mcpServers"]
+        # Kimi's user-level MCP file lives directly under its config home
+        # (resolveKimiHome/mcp.json with KIMI_CODE_HOME set), in its own
+        # {"mcpServers": {name: {transport, url, headers}}} dialect.
+        mcp_json = {
+            "mcpServers": {
+                name: {"transport": "http", **{k: v for k, v in server.items() if k != "type"}}
+                for name, server in self._installed_mcp_servers.items()
+            }
+        }
+        (self.root / "mcp.json").write_text(json.dumps(mcp_json, indent=2) + "\n")
         # KIMI_CODE_HOME relocates config, sessions, and credentials together,
         # so the attempt's whole footprint stays inside its isolated root.
         self.env.update(KIMI_CODE_HOME=str(self.root))
@@ -136,13 +154,20 @@ class KimiDriver(PtyDriver):
     def prepare_launch(self):
         """Pre-approve the workspace before Kimi binds its initial model.
 
-        Agency always accepts Kimi's trust prompt. Kimi 0.42.0 can lose the
+        Agency always accepts Kimi's trust prompt. Kimi can lose the
         active model when that prompt is accepted during TUI startup, so write
         the exact record its trust service would have written before launch.
         This runs after callers finalize ``cwd`` and also covers cold starts;
         resumed attempts normally already carry the record in their blob.
         """
-        root = posixpath.abspath(self.cwd.replace("\\", "/"))
+        # The sandbox workspace can be a symlink (e.g. /workspace -> /testbed),
+        # and Kimi trusts the resolved real path, not the launch directory.
+        paths = {posixpath.abspath(self.cwd.replace("\\", "/"))}
+        paths.add(posixpath.abspath(os.path.realpath(self.cwd)))
+        for root in sorted(paths):
+            self._write_trust_marker(root)
+
+    def _write_trust_marker(self, root):
         normalized = root.rstrip("/")
         base = normalized.rsplit("/", 1)[-1]
         slug = re.sub(r"[^a-z0-9._-]+", "-", base.lower()).strip("-")[:40].strip("-")
@@ -163,12 +188,13 @@ class KimiDriver(PtyDriver):
     def ready(self, handle):
         lines, _x, y, _generation = handle.terminal_screen()
         if any("Trust this folder?" in line for line in lines):
-            # Same shape as Codex's trust prompt: the default row is already
-            # selected, so Enter accepts and the composer follows. Answer it
-            # once -- readiness is polled every 25ms, and the surplus Enters
-            # would land in the composer as empty submissions.
+            # The default row is already selected, so Enter accepts and the
+            # composer follows. Answer it once -- readiness is polled every
+            # 25ms, and the surplus Enters would land in the composer as
+            # empty submissions.
             if not self._trusted_directory and any(
-                "Trust this folder" in line and "❯" in line for line in lines
+                ("Trust and continue" in line or ("Trust this folder" in line and "❯" in line))
+                for line in lines
             ):
                 self._trusted_directory = True
                 handle.write_terminal(b"\r")

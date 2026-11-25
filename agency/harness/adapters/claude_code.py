@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import Request
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from .. import agharness
 from ..pins import managed_binary
 from .pty.driver import PtyDriver, run_pty_attempt
 from .streaming import start_streaming_response, stream_response, upstream_error
@@ -370,16 +371,21 @@ class ClaudeDriver(PtyDriver):
         )
         if max_steps is not None:
             self.argv += ["--max-turns", str(max_steps)]
-        context_limit = fetch_context_limit(runtime.harness_base_url, runtime.token)
-        if context_limit is not None:
+        self.context_limit = fetch_context_limit(runtime.harness_base_url, runtime.token)
+        if self.context_limit is not None:
             # Otherwise Claude Code sizes auto-compaction for whatever it
             # thinks the model name is (200K when it doesn't know it), not
             # for the model actually proxied behind Agency.
-            model, argv, env = claude_code_window_settings(runtime.model, context_limit)
+            model, argv, env = claude_code_window_settings(runtime.model, self.context_limit)
             if model != runtime.model:
                 self.argv[self.argv.index("--model") + 1] = model
             self.argv += argv
             self.env.update(env)
+        self._installed_mcp_servers = agharness.mcp_config_for(
+            runtime.harness_base_url,
+            runtime.token,
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+        )["mcpServers"]
 
     def _transcript(self):
         if self.session_id is None:

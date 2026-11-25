@@ -14,6 +14,7 @@ from fastapi import Request
 from ...llm.response_check import tool_arguments_complete
 from ...llm.message_store import with_tool_schema
 from ...native_harness.usage import prompt_tokens
+from .. import agharness
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
 from ..pins import managed_binary
 from ..common import extract_bearer_token
@@ -378,13 +379,19 @@ class CodexDriver(_HookPtyDriver):
         )
 
     def _configure(self, adapter, runtime, max_steps):
+        self.context_limit = fetch_context_limit(runtime.harness_base_url, runtime.token)
         adapter._write_codex_config(
             self.root,
             runtime.harness_base_url,
             runtime.model or "default",
             has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
-            context_limit=fetch_context_limit(runtime.harness_base_url, runtime.token),
+            context_limit=self.context_limit,
         )
+        self._installed_mcp_servers = agharness.mcp_config_for(
+            runtime.harness_base_url,
+            runtime.token,
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+        )["mcpServers"]
         with (self.root / "config.toml").open("a") as config:
             config.write('\n[projects."/workspace"]\ntrust_level = "trusted"\n')
         self.env.update(CODEX_HOME=str(self.root), AGENCY_PROXY_API_KEY=runtime.token)

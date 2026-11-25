@@ -8,6 +8,7 @@ import sqlite3
 from .pty.execution import MAX_SESSION_BYTES
 
 from .base import AdapterRuntime, AttemptResult, HarnessAdapter, fetch_context_limit
+from .. import agharness
 from ..pins import managed_binary
 from .openai_chat_completions import ChatCompletionsProtocol
 from .pty.driver import PtyDriver, run_pty_attempt
@@ -22,6 +23,7 @@ class OpencodeDriver(PtyDriver):
     confirm_interrupt = True
 
     def _configure(self, adapter, runtime, max_steps):
+        self.context_limit = fetch_context_limit(runtime.harness_base_url, runtime.token)
         plugin = adapter._write_agpolicy_plugin(self.root)
         adapter._write_opencode_config(
             self.root,
@@ -30,8 +32,14 @@ class OpencodeDriver(PtyDriver):
             runtime.model or "default",
             plugin,
             max_steps,
-            context_limit=fetch_context_limit(runtime.harness_base_url, runtime.token),
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+            context_limit=self.context_limit,
         )
+        self._installed_mcp_servers = agharness.mcp_config_for(
+            runtime.harness_base_url,
+            runtime.token,
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+        )["mcpServers"]
         self.env.update(
             OPENCODE_CONFIG=str(self.root / "opencode.json"),
             OPENCODE_DISABLE_AUTOUPDATE="true",
@@ -134,6 +142,7 @@ class OpenCodeAdapter(ChatCompletionsProtocol, HarnessAdapter):
         plugin_path,
         max_steps: "int | None",
         *,
+        has_sandbox_mcp_tools: bool = False,
         context_limit: "int | None" = None,
     ) -> None:
         model_entry = {"name": model}
@@ -171,6 +180,20 @@ class OpenCodeAdapter(ChatCompletionsProtocol, HarnessAdapter):
         }
         if max_steps is not None:
             config["agent"]["build"] = {"steps": max_steps}
+        # The Agency MCP servers, in OpenCode's own dialect (1.19.x maps
+        # server names directly under `mcp`, each discriminated on `type`).
+        # oauth: false keeps its OAuth auto-detection off the bearer header.
+        config["mcp"] = {
+            name: {
+                "type": "remote",
+                "url": server["url"],
+                "headers": server["headers"],
+                "oauth": False,
+            }
+            for name, server in agharness.mcp_config_for(
+                base_url, token, has_sandbox_mcp_tools=has_sandbox_mcp_tools
+            )["mcpServers"].items()
+        }
         (config_home / "opencode.json").write_text(json.dumps(config))
 
     def _write_agpolicy_plugin(self, config_home):

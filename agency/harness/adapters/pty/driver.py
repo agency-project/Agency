@@ -79,6 +79,13 @@ class PtyDriver:
         self.session_id = session_id
         self.cwd = "/workspace"
         self.transcript_path = None
+        # The context limit this launch was configured with (None when the
+        # host could not supply one) -- set by _configure, read by the
+        # uniform harness-contract tests and any introspecting caller.
+        self.context_limit = None
+        # The neutral Agency MCP server dict this launch installed, set by
+        # _configure; see installed_mcp_servers().
+        self._installed_mcp_servers = None
         self._restore(session_id, blob)
         self.env = {
             "PATH": HARNESS_PATH,
@@ -103,6 +110,19 @@ class PtyDriver:
 
     def _configure(self, adapter, runtime, max_steps):
         raise NotImplementedError
+
+    def installed_mcp_servers(self) -> "dict[str, dict] | None":
+        """The Agency MCP servers this launch installed, in the neutral
+        {name: {"type", "url", "headers"}} form -- or None when none were.
+        Dialect translation is this driver's private concern; this is the
+        uniform surface shared harness-contract tests introspect."""
+        return self._installed_mcp_servers
+
+    def configured_context_limit(self) -> "int | None":
+        """The context limit this launch was configured with, or None when
+        the host could not supply one. How the dialect consumes it (model
+        catalog, compaction window, provider limits) stays per-harness."""
+        return self.context_limit
 
     def prepare_launch(self):
         """Materialize any driver state that depends on the final working directory."""

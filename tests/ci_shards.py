@@ -17,7 +17,10 @@ from __future__ import annotations
 
 _SANDBOX_SHARD_FILES: "dict[str, list[str]]" = {
     # The two halves of the split tier-3 contract file.
-    "all_backends_contract": ["tests/sandbox/test_all_backends.py"],
+    "all_backends_contract": [
+        "tests/sandbox/test_all_backends.py",
+        "tests/sandbox/test_all_backends_common.py",
+    ],
     "all_backends_checkpoints": ["tests/sandbox/test_all_backends_checkpoints.py"],
     # All remaining sandbox/harness files.
     "everything_else": [
@@ -35,6 +38,7 @@ _SANDBOX_SHARD_FILES: "dict[str, list[str]]" = {
         "tests/sandbox/test_cow_zfs_linux.py",
         "tests/sandbox/test_cow_zfs.py",
         "tests/harness/test_external_pty.py",
+        "tests/harness/test_harness_contract.py",
         "tests/harness/test_agproxy_ptrace.py",
         "tests/harness/test_daemon.py",
         "tests/harness/test_executable.py",

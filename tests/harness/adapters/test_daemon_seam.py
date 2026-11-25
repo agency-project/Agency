@@ -37,7 +37,7 @@ def _runtime(*, sandbox=None) -> AdapterRuntime:
     )
 
 
-@pytest.mark.parametrize("name", ["native", "claude_code", "codex", "grok", "opencode"])
+@pytest.mark.parametrize("name", ["native", "claude_code", "codex", "grok", "kimi", "opencode"])
 def test_every_engine_implements_daemon_attempt_seam(name):
     adapter = HarnessAdapter.for_config(name, agconfig())
     assert type(adapter).run_daemon_attempt is not HarnessAdapter.run_daemon_attempt
@@ -487,3 +487,84 @@ def test_mcp_adapters_include_separate_sandbox_config(monkeypatch, backend_cls, 
             "url": f"{runtime.harness_base_url}/sandbox/mcp",
             "headers": {"Authorization": f"Bearer {runtime.token}"},
         }
+
+
+def _pty_driver(adapter_cls, runtime, tmp_path):
+    """Construct the adapter's PTY driver, which builds its config files."""
+    from agency.harness.adapters.pty.driver import driver_for
+
+    return driver_for(adapter_cls(runtime.agconfig), runtime, tmp_path, None, None, 4)
+
+
+def _extract_toml_mcp_servers(config_toml: str) -> "dict[str, dict]":
+    servers: "dict[str, dict]" = {}
+    for section in config_toml.split("[mcp_servers.")[1:]:
+        header, _, rest = section.partition("]\n")
+        name = header.strip().strip('"')
+        entry: "dict[str, str]" = {}
+        for line in rest.splitlines():
+            if line.startswith("["):
+                break
+            if "=" in line:
+                key, value = line.split("=", 1)
+                entry[key.strip()] = value.strip()
+        servers[name] = entry
+    return servers
+
+
+@pytest.mark.parametrize("harness", ["codex", "grok", "kimi", "opencode"])
+@pytest.mark.parametrize("has_sandbox_tools", [False, True])
+def test_pty_harness_configs_wire_the_agency_mcp_servers(
+    monkeypatch, tmp_path, harness, has_sandbox_tools
+):
+    """Every PTY dialect translates the Agency MCP servers into its own
+    config format at launch, each reaching the same two HTTP endpoints."""
+    monkeypatch.setattr(
+        "agency.harness.adapters.base.fetch_context_limit", lambda *args, **kwargs: 64_000
+    )
+    monkeypatch.setattr(
+        "agency.harness.adapters.kimi.fetch_context_limit", lambda *args, **kwargs: 64_000
+    )
+    runtime = replace(_runtime(), has_sandbox_mcp_tools=has_sandbox_tools)
+    adapter_cls = HarnessAdapter.for_config(harness, runtime.agconfig).__class__
+    driver = _pty_driver(adapter_cls, runtime, tmp_path)
+    expected = {"agency", "agency-sandbox"} if has_sandbox_tools else {"agency"}
+    base, token = runtime.harness_base_url, runtime.token
+
+    if harness == "codex":
+        servers = _extract_toml_mcp_servers((tmp_path / "config.toml").read_text())
+        assert set(servers) == expected
+        assert servers["agency"]["url"] == f'"{base}/mcp"'
+        assert driver.env["AGENCY_PROXY_API_KEY"] == token
+    elif harness == "grok":
+        servers = _extract_toml_mcp_servers((tmp_path / "config.toml").read_text())
+        assert set(servers) == expected
+        assert servers["agency"]["url"] == f'"{base}/mcp"'
+        assert servers["agency"]["headers"] == f'{{ Authorization = "Bearer {token}" }}'
+    elif harness == "kimi":
+        import json as _json
+
+        servers = _json.loads((tmp_path / "mcp.json").read_text())["mcpServers"]
+        assert set(servers) == expected
+        assert servers["agency"] == {
+            "transport": "http",
+            "url": f"{base}/mcp",
+            "headers": {"Authorization": f"Bearer {token}"},
+        }
+    elif harness == "opencode":
+        import json as _json
+
+        servers = _json.loads((tmp_path / "opencode.json").read_text())["mcp"]
+        assert set(servers) == expected
+        assert servers["agency"]["type"] == "remote"
+        assert servers["agency"]["url"] == f"{base}/mcp"
+        assert servers["agency"]["headers"] == {"Authorization": f"Bearer {token}"}
+        assert servers["agency"]["oauth"] is False
+    if has_sandbox_tools:
+        sandbox_url = {
+            "codex": f"{base}/sandbox/mcp",
+            "grok": f"{base}/sandbox/mcp",
+            "kimi": f"{base}/sandbox/mcp",
+            "opencode": f"{base}/sandbox/mcp",
+        }[harness]
+        assert servers["agency-sandbox"]["url"].strip('"') == sandbox_url

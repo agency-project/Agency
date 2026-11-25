@@ -25,7 +25,13 @@ repos:
     hooks:
       - id: check-cleanup-returns
         name: no bare return in cleanup functions
-        entry: python scripts/check_cleanup_returns.py
+        entry: python tests/check_cleanup_returns.py
         language: python
         types: [python]
         exclude: ^tests/
+      - id: check-ci-shard-coverage
+        name: every sandbox/harness test file is in a CI shard
+        entry: python tests/check_ci_shard_coverage.py
+        language: python
+        pass_filenames: false
+        files: ^(tests/(sandbox|harness)/.*\.py|tests/ci_shards\.py)$
