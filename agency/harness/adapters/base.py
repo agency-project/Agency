@@ -176,6 +176,19 @@ class HarnessAdapter:
     def _format_agency_stream_to_harness(self, agency_stream):
         raise NotImplementedError
 
+    def launch_mcp_servers(self, runtime: "AdapterRuntime") -> dict:
+        """The Agency MCP servers this adapter's launch installs, in the
+        neutral {name: {"type", "url", "headers"}} form. Identical for every
+        harness -- only the dialect translation differs -- so it lives once
+        here as the shared contract shared harness tests assert against."""
+        from .. import agharness
+
+        return agharness.mcp_config_for(
+            runtime.harness_base_url,
+            runtime.token,
+            has_sandbox_mcp_tools=runtime.has_sandbox_mcp_tools,
+        )["mcpServers"]
+
     @staticmethod
     def for_config(harness: str, agconfig: "agconfig_cls") -> "HarnessAdapter":
         from .claude_code import ClaudeCodeAdapter

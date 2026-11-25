@@ -41,6 +41,16 @@ def driver(runtime, tmp_path):
     )
 
 
+def test_kimi_config_wires_the_agency_mcp_servers(driver, tmp_path):
+    mcp_json = json.loads((tmp_path / "mcp.json").read_text())
+    assert mcp_json["mcpServers"]["agency"] == {
+        "transport": "http",
+        "url": "http://127.0.0.1:8766/mcp",
+        "headers": {"Authorization": "Bearer attempt-token"},
+    }
+    assert "agency-sandbox" not in mcp_json["mcpServers"]
+
+
 def test_launch_is_interactive_and_isolated(driver, runtime, tmp_path):
     assert driver.argv[0] == "/managed/harness-cli"
     assert "--auto" in driver.argv
@@ -189,7 +199,35 @@ def test_workspace_is_trusted_before_launch(driver, tmp_path):
     assert isinstance(record["trustedAt"], int)
 
 
+def test_symlinked_workspace_is_trusted_under_both_paths(driver, tmp_path):
+    """The sandbox workspace is often a symlink (e.g. /workspace -> /testbed);
+    Kimi trusts the resolved real path, so the marker must cover it too."""
+    (tmp_path / "testbed").mkdir()
+    (tmp_path / "workspace").symlink_to(tmp_path / "testbed")
+    driver.cwd = str(tmp_path / "workspace")
+
+    driver.prepare_launch()
+
+    markers = sorted((tmp_path / "workspace-trust").iterdir())
+    roots = {json.loads(m.read_text())["root"] for m in markers}
+    assert roots == {str(tmp_path / "workspace"), str(tmp_path / "testbed")}
+
+
 def test_trust_dialog_is_acknowledged_before_the_composer(driver):
+    """Kimi 2.5.2's dialog: the prompt and the selected action row are
+    separate lines."""
+    trust = [
+        " Trust this folder?",
+        "   ❯ Trust and continue",
+        "    Don't trust",
+    ]
+    handle = SimpleNamespace(terminal_screen=lambda: (trust, 0, 0, 1), write_terminal=Mock())
+    assert driver.ready(handle) is False
+    handle.write_terminal.assert_called_once_with(b"\r")
+
+
+def test_trust_dialog_with_prompt_and_action_on_one_line_is_acknowledged(driver):
+    """The pre-2.5.2 dialog shape keeps working."""
     trust = [
         " Trust this folder?",
         "  ❯ Trust this folder",
